@@ -1,112 +1,115 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
 try:
     import trimesh
 except ModuleNotFoundError:
     print("trimesh is required. Please install with `pip install trimesh`")
-    exit(1)
+    raise SystemExit(1)
 
-import json
-import os
+from pathlib import Path
 
-import coacd
-import loguru
+import numpy as np
 import tyro
+from loguru import logger
 
-import spider
+MeshPart = tuple[np.ndarray, np.ndarray]
+
+
+def fast_voxel_convex_decomp_from_pointcloud(
+    points: np.ndarray, pitch: float = 0.02, min_points: int = 20
+) -> list[MeshPart]:
+    """Approximate convex decomposition from voxel clusters."""
+    coords = np.floor(points / pitch).astype(int)
+    unique_voxels, inverse = np.unique(coords, axis=0, return_inverse=True)
+
+    hulls: list[MeshPart] = []
+    for idx, _ in enumerate(unique_voxels):
+        cluster_points = points[inverse == idx]
+        if len(cluster_points) < min_points:
+            continue
+        cluster_mesh = trimesh.Trimesh(vertices=cluster_points, faces=[])
+        hull = cluster_mesh.convex_hull
+        vertices = np.asarray(hull.vertices)
+        faces = np.asarray(hull.faces, dtype=int)
+        hulls.append((vertices, faces))
+    return hulls
+
+
+def decompose_one_mesh(
+    input_path: Path,
+    output_path: Path,
+    pitch: float,
+    min_points: int,
+) -> bool:
+    mesh = trimesh.load(str(input_path), force="mesh", process=False, skip_materials=True)
+    points = np.asarray(mesh.vertices)
+    if points.size == 0:
+        logger.warning("Skip empty mesh: {}", input_path)
+        return False
+
+    hulls = fast_voxel_convex_decomp_from_pointcloud(points, pitch=pitch, min_points=min_points)
+    if not hulls:
+        logger.warning("No convex hull parts generated: {}", input_path)
+        return False
+
+    parts = [trimesh.Trimesh(vs, fs, process=False) for vs, fs in hulls]
+    merged = trimesh.util.concatenate(parts)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    merged.export(str(output_path))
+    logger.info("Saved {} parts -> {}", len(parts), output_path)
+    return True
 
 
 def main(
-    dataset_dir: str = f"{spider.ROOT}/../example_datasets",
-    dataset_name: str = "oakink",
-    robot_type: str = "allegro",
-    embodiment_type: str = "bimanual",
-    task: str = "pick_spoon_bowl",
-    data_id: int = 0,
-):
-    dataset_dir = os.path.abspath(dataset_dir)
-    if embodiment_type == "right":
-        hands = ["right"]
-    elif embodiment_type == "left":
-        hands = ["left"]
-    elif embodiment_type == "bimanual":
-        hands = ["right", "left"]
-    else:
-        raise ValueError(f"Invalid hand type: {embodiment_type}")
-
-    # load task info produced during dataset preprocessing
-    processed_dir = f"{dataset_dir}/processed/{dataset_name}/mano/{embodiment_type}/{task}/{data_id}"
-    task_info_path = f"{processed_dir}/../task_info.json"
-    if not os.path.exists(task_info_path):
-        loguru.logger.error(
-            f"Missing task_info at {task_info_path}. Run dataset preprocessing first."
-        )
+    meshes_root: str = "/home/ycl/projects/workspace/egoengine-mpc/robosuite/models/assets/objects/meshes",
+    recursive: bool = True,
+    pitch: float = 0.02,
+    min_points: int = 20,
+    overwrite: bool = False,
+) -> None:
+    root = Path(meshes_root).expanduser().resolve()
+    if not root.exists():
+        logger.error("Mesh root does not exist: {}", root)
         return
-    with open(task_info_path) as f:
-        task_info = json.load(f)
 
-    for hand in hands:
-        if hand == "right":
-            mesh_dir = task_info.get("right_object_mesh_dir")
-        else:
-            mesh_dir = task_info.get("left_object_mesh_dir")
-        mesh_dir = f"{dataset_dir}/{mesh_dir}"
-        if mesh_dir is None:
-            loguru.logger.warning(f"No mesh_dir for {hand} hand; skipping.")
+    pattern = "**/*_cm.obj" if recursive else "*_cm.obj"
+    input_files = sorted(root.glob(pattern))
+    if not input_files:
+        logger.warning("No *_cm.obj found under {}", root)
+        return
+
+    ok_count = 0
+    skip_count = 0
+    fail_count = 0
+    for input_path in input_files:
+        output_path = input_path.with_name(input_path.stem.replace("_cm", "_convex") + ".obj")
+        if output_path.exists() and not overwrite:
+            logger.info("Skip existing: {}", output_path)
+            skip_count += 1
             continue
-        input_file = f"{mesh_dir}/visual.obj"
-        output_dir = f"{mesh_dir}/convex"
-        if not os.path.exists(input_file):
-            loguru.logger.warning(
-                f"Input mesh {input_file} does not exist. Skipping {hand} hand."
+        try:
+            success = decompose_one_mesh(
+                input_path=input_path,
+                output_path=output_path,
+                pitch=pitch,
+                min_points=min_points,
             )
-            continue
+            if success:
+                ok_count += 1
+            else:
+                fail_count += 1
+        except Exception as exc:
+            logger.exception("Failed {}: {}", input_path, exc)
+            fail_count += 1
 
-        mesh = trimesh.load(
-            input_file, force="mesh", process=False, skip_materials=True
-        )
-        mesh = coacd.Mesh(mesh.vertices, mesh.faces)
-        result = coacd.run_coacd(
-            mesh,
-            threshold=0.07,
-            max_convex_hull=16,
-            preprocess_mode="auto",
-            preprocess_resolution=50,
-            resolution=2000,
-            mcts_nodes=50,
-            mcts_iterations=200,
-            mcts_max_depth=5,
-            pca=False,
-            merge=True,
-            decimate=True,
-            max_ch_vertex=32,
-            extrude=True,
-            extrude_margin=0.1,
-            apx_mode="ch",
-            seed=1,
-        )
-        # ensure output directory exists
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-        for i, (vs, fs) in enumerate(result):
-            mesh_part = trimesh.Trimesh(vs, fs)
-            part_filename = f"{output_dir}/{i}.obj"
-            mesh_part.export(part_filename)
-            loguru.logger.info(f"Exported mesh part {i} to {part_filename}")
-
-        # persist decomposed path back to task_info for future reference
-        key = "right_object_convex_dir" if hand == "right" else "left_object_convex_dir"
-        relative_path = os.path.relpath(output_dir, dataset_dir)
-        task_info[key] = str(relative_path)
-
-    # save updated task_info
-    with open(task_info_path, "w") as f:
-        json.dump(task_info, f, indent=2)
-    loguru.logger.info(f"Updated task_info with convex dirs at {task_info_path}")
+    logger.info(
+        "Done. total={} success={} skipped={} failed={}",
+        len(input_files),
+        ok_count,
+        skip_count,
+        fail_count,
+    )
 
 
 if __name__ == "__main__":

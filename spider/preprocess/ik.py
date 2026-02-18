@@ -14,6 +14,7 @@ Author: Chaoyi Pan
 Date: 2025-07-06
 """
 
+import json
 import os
 
 import loguru
@@ -29,6 +30,41 @@ from scipy import signal
 from spider import ROOT
 from spider.io import get_processed_data_dir
 from spider.mujoco_utils import get_viewer
+
+
+def _quat_wxyz_to_rotmat(quat_wxyz: np.ndarray) -> np.ndarray:
+    w, x, y, z = quat_wxyz
+    return np.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ],
+        dtype=np.float64,
+    )
+
+
+def _load_obj_vertices(obj_path: str) -> np.ndarray:
+    verts = []
+    with open(obj_path, encoding="utf-8") as f:
+        for line in f:
+            if line.startswith("v "):
+                parts = line.strip().split()
+                if len(parts) >= 4:
+                    verts.append([float(parts[1]), float(parts[2]), float(parts[3])])
+    if len(verts) == 0:
+        return np.zeros((0, 3), dtype=np.float64)
+    return np.asarray(verts, dtype=np.float64)
+
+
+def _nearest_point_on_vertices(
+    p_world: np.ndarray, verts_world: np.ndarray
+) -> tuple[np.ndarray, float]:
+    if verts_world is None or verts_world.shape[0] == 0:
+        return p_world, np.inf
+    d2 = np.sum((verts_world - p_world[None, :]) ** 2, axis=1)
+    idx = int(np.argmin(d2))
+    return verts_world[idx], float(np.sqrt(d2[idx]))
 
 
 def add_mocap_bodies(
@@ -182,8 +218,10 @@ def main(
     object_solimp_width: float = 0.001,
     max_num_initial_guess: int = 8,
     average_frame_size: int = 3,
-    aggregate_contact: bool = True,
+    aggregate_contact: bool = False,
     z_offset: float = 0.0,
+    mesh_contact_threshold: float = 0.02,  # meters
+    contact_height_eps: float = 0.005,  # object z above min z -> contact stage
 ):
     # resolved processed directories
     dataset_dir = os.path.abspath(dataset_dir)
@@ -204,6 +242,12 @@ def main(
         data_id=data_id,
     )
     os.makedirs(processed_dir_robot, exist_ok=True)
+    # load task info (for object convex mesh dirs)
+    task_info_path = f"{processed_dir_robot}/../task_info.json"
+    if not os.path.exists(task_info_path):
+        raise FileNotFoundError(f"task_info.json not found: {task_info_path}")
+    with open(task_info_path, encoding="utf-8") as f:
+        task_info = json.load(f)
     # load model from processed scene
     model_path = f"{processed_dir_robot}/../scene.xml"
     # NOTE: sites in robot should follow the order of the xml file
@@ -220,15 +264,58 @@ def main(
     try:
         contact_left = loaded_data["contact_left"][start_idx:end_idx]
         contact_right = loaded_data["contact_right"][start_idx:end_idx]
-    except:
-        loguru.logger.warning("No contact data found, using all one")
-        contact_left = np.ones((qpos_finger_right.shape[0], 5))
-        contact_right = np.ones((qpos_finger_left.shape[0], 5))
+    except KeyError as e:
+        raise KeyError(
+            "Missing contact data in trajectory_keypoints.npz. "
+            "Please run detect_contact first and ensure "
+            "contact_left/contact_right are saved."
+        ) from e
+    try:
+        contact_pos_left_raw = loaded_data["contact_pos_left"]
+        contact_pos_right_raw = loaded_data["contact_pos_right"]
+    except KeyError as e:
+        raise KeyError(
+            "Missing contact_pos data in trajectory_keypoints.npz. "
+            "Please run detect_contact first and ensure "
+            "contact_pos_left/contact_pos_right are saved."
+        ) from e
+    H_contact = qpos_finger_right.shape[0]
+    # contact_pos can be either static (5,3) or per-frame (H,5,3)
+    if contact_pos_right_raw.ndim == 2:
+        contact_pos_right = np.tile(contact_pos_right_raw[None, :, :], (H_contact, 1, 1))
+    else:
+        contact_pos_right = contact_pos_right_raw[start_idx:end_idx]
+    if contact_pos_left_raw.ndim == 2:
+        contact_pos_left = np.tile(contact_pos_left_raw[None, :, :], (H_contact, 1, 1))
+    else:
+        contact_pos_left = contact_pos_left_raw[start_idx:end_idx]
     contact_ref = np.concatenate([contact_right, contact_left], axis=1)
     if aggregate_contact:
-        contact_aggregated = np.any(contact_ref, axis=-1)
-        for i in range(contact_ref.shape[1]):
-            contact_ref[:, i] = contact_aggregated
+        # Aggregate contact per hand side (not across both hands).
+        # right hand: channels [0:5], left hand: channels [5:10]
+        if embodiment_type == "right":
+            right_any = np.any(contact_right > 0.5, axis=1, keepdims=True).astype(
+                contact_right.dtype
+            )
+            contact_ref[:, :5] = np.repeat(right_any, 5, axis=1)
+            contact_ref[:, 5:] = 0.0
+        elif embodiment_type == "left":
+            left_any = np.any(contact_left > 0.5, axis=1, keepdims=True).astype(
+                contact_left.dtype
+            )
+            contact_ref[:, :5] = 0.0
+            contact_ref[:, 5:] = np.repeat(left_any, 5, axis=1)
+        elif embodiment_type == "bimanual":
+            right_any = np.any(contact_right > 0.5, axis=1, keepdims=True).astype(
+                contact_right.dtype
+            )
+            left_any = np.any(contact_left > 0.5, axis=1, keepdims=True).astype(
+                contact_left.dtype
+            )
+            contact_ref[:, :5] = np.repeat(right_any, 5, axis=1)
+            contact_ref[:, 5:] = np.repeat(left_any, 5, axis=1)
+        else:
+            raise ValueError(f"Invalid embodiment_type: {embodiment_type}")
     # get the first contact frame where contact_left turns to 1 (two 1s consecutive)
     first_contact_frame_left = np.zeros(5) + qpos_finger_right.shape[0]
     first_contact_frame_right = np.zeros(5) + qpos_finger_left.shape[0]
@@ -254,6 +341,41 @@ def main(
         axis=1,
     )
     qpos_ref[:, :, 2] += z_offset
+    # Height-based contact stage (per side).
+    right_contact_stage = (
+        qpos_obj_right[:, 2] > (np.min(qpos_obj_right[:, 2]) + contact_height_eps)
+    )
+    left_contact_stage = (
+        qpos_obj_left[:, 2] > (np.min(qpos_obj_left[:, 2]) + contact_height_eps)
+    )
+
+    # Load object convex vertices (local frame) for mesh-distance based contact logic.
+    right_object_verts_local = np.zeros((0, 3), dtype=np.float64)
+    left_object_verts_local = np.zeros((0, 3), dtype=np.float64)
+    if embodiment_type in ["right", "bimanual"]:
+        right_convex_dir_rel = task_info.get("right_object_convex_dir")
+        if right_convex_dir_rel:
+            right_convex_dir = os.path.join(dataset_dir, right_convex_dir_rel)
+            if os.path.isdir(right_convex_dir):
+                for fn in sorted(os.listdir(right_convex_dir)):
+                    if fn.endswith(".obj") and fn.split(".")[0].isdigit():
+                        v = _load_obj_vertices(os.path.join(right_convex_dir, fn))
+                        if v.shape[0] > 0:
+                            right_object_verts_local = np.concatenate(
+                                [right_object_verts_local, v], axis=0
+                            )
+    if embodiment_type in ["left", "bimanual"]:
+        left_convex_dir_rel = task_info.get("left_object_convex_dir")
+        if left_convex_dir_rel:
+            left_convex_dir = os.path.join(dataset_dir, left_convex_dir_rel)
+            if os.path.isdir(left_convex_dir):
+                for fn in sorted(os.listdir(left_convex_dir)):
+                    if fn.endswith(".obj") and fn.split(".")[0].isdigit():
+                        v = _load_obj_vertices(os.path.join(left_convex_dir, fn))
+                        if v.shape[0] > 0:
+                            left_object_verts_local = np.concatenate(
+                                [left_object_verts_local, v], axis=0
+                            )
 
     # load model
     mj_model = mujoco.MjModel.from_xml_path(model_path)
@@ -431,6 +553,12 @@ def main(
         mocap_id = mj_model_ik.body_mocapid[body_id]
         index_map[body_name]["mocap_idx"] = mocap_id
         # print(body_name, body_id, mocap_id)
+    palm_site_id_map = {}
+    for side in ["right", "left"]:
+        palm_name = f"{side}_palm"
+        sid = mujoco.mj_name2id(mj_model_ik, mujoco.mjtObj.mjOBJ_SITE, palm_name)
+        if sid >= 0:
+            palm_site_id_map[palm_name] = sid
 
     # set object position
     if embodiment_type == "bimanual":
@@ -443,11 +571,14 @@ def main(
 
     # set the mocap sites to the tip positions
     # for i, site_id in enumerate(site_ids):
+    mujoco.mj_forward(mj_model_ik, mj_data_ik)
     for i in range(len(sites_for_mimic)):
         site_id = site_ids[i]
         site_name = sites_for_mimic[i]
         mano_id = mano2mimic_site_idx[i]
         mocap_id = i
+        # Warm-start: initialize palm mocap position from human wrist position
+        # at frame 0, then switch to orientation-only palm tracking in rollout loop.
         mj_data_ik.mocap_pos[mocap_id] = qpos_ref[0, mano_id, :3]
         mj_data_ik.mocap_quat[mocap_id] = qpos_ref[0, mano_id, 3:]
 
@@ -470,13 +601,14 @@ def main(
     ref_mocap_ids = []
     ref_site_ids = []
     track_site_ids = []
+    track_site_names = []
     # get track site ids
     for sid in range(mj_model.nsite):
         name = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_SITE, sid)
         if name is not None and name.startswith("track"):
             track_site_ids.append(sid)
-    for sid in track_site_ids:
-        track_name = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_SITE, sid)
+            track_site_names.append(name)
+    for sid, track_name in zip(track_site_ids, track_site_names, strict=False):
         ref_name = track_name.replace("track", "ref")
         # get mocap id of ref site
         mocap_body_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, ref_name)
@@ -489,6 +621,21 @@ def main(
     with run_viewer() as gui:
         cnt = 0
         while cnt < H:
+            frame_contact_right = np.zeros(5, dtype=np.float64)
+            frame_contact_left = np.zeros(5, dtype=np.float64)
+            right_verts_world = None
+            left_verts_world = None
+            if right_object_verts_local.shape[0] > 0:
+                obj_qidx = index_map["right_object"]["qpos_idx"]
+                obj_pos = qpos_ref[cnt, obj_qidx, :3]
+                obj_R = _quat_wxyz_to_rotmat(qpos_ref[cnt, obj_qidx, 3:])
+                right_verts_world = right_object_verts_local @ obj_R.T + obj_pos
+            if left_object_verts_local.shape[0] > 0:
+                obj_qidx = index_map["left_object"]["qpos_idx"]
+                obj_pos = qpos_ref[cnt, obj_qidx, :3]
+                obj_R = _quat_wxyz_to_rotmat(qpos_ref[cnt, obj_qidx, 3:])
+                left_verts_world = left_object_verts_local @ obj_R.T + obj_pos
+
             if cnt == 0:
                 # reset distance cost
                 cost_sum = 0.0
@@ -499,12 +646,15 @@ def main(
                     mj_data_ik.qpos[:] = np.random.rand(mj_model_ik.nq)
                     mj_data_ik.qvel[:] = np.zeros(mj_model_ik.nv)
                     mj_data_ik.ctrl[:] = np.random.rand(mj_model_ik.nu)
+                    mujoco.mj_forward(mj_model_ik, mj_data_ik)
                     mocap_id_list = []
                     qpos_id_list = []
                     for k, v in index_map.items():
                         if v["mocap_idx"] != -1:
                             mocap_idx = v["mocap_idx"]
                             qpos_idx = v["qpos_idx"]
+                            # Warm-start stage: use human wrist position as palm
+                            # initialization target at frame 0.
                             mj_data_ik.mocap_pos[mocap_idx] = qpos_ref[
                                 cnt, qpos_idx, :3
                             ]
@@ -551,11 +701,61 @@ def main(
                 contact_list = []
                 images = []
 
+            mujoco.mj_forward(mj_model_ik, mj_data_ik)
             for k, v in index_map.items():
                 if v["mocap_idx"] != -1:
-                    mj_data_ik.mocap_pos[v["mocap_idx"]] = qpos_ref[
-                        cnt, v["qpos_idx"], :3
-                    ]
+                    target_pos = qpos_ref[cnt, v["qpos_idx"], :3].copy()
+                    if "palm" in k and k in palm_site_id_map:
+                        # Orientation-only palm tracking: do not pull palm position.
+                        target_pos = mj_data_ik.site_xpos[palm_site_id_map[k]].copy()
+                    # Mesh-threshold contact logic:
+                    # if fingertip is close enough to object mesh, project it
+                    # onto mesh and mark as contact.
+                    if "_tip" in k:
+                        finger_map = {
+                            "thumb": 0,
+                            "index": 1,
+                            "middle": 2,
+                            "ring": 3,
+                            "pinky": 4,
+                        }
+                        fid = None
+                        for fn, fi in finger_map.items():
+                            if fn in k:
+                                fid = fi
+                                break
+                        if fid is not None:
+                            if k.startswith("right_") and right_verts_world is not None:
+                                if right_contact_stage[cnt]:
+                                    # In-air stage: force all five fingers onto mesh.
+                                    p_proj, _ = _nearest_point_on_vertices(
+                                        target_pos, right_verts_world
+                                    )
+                                    target_pos = p_proj
+                                    frame_contact_right[fid] = 1.0
+                                else:
+                                    p_proj, dist = _nearest_point_on_vertices(
+                                        target_pos, right_verts_world
+                                    )
+                                    if dist < mesh_contact_threshold:
+                                        target_pos = p_proj
+                                        frame_contact_right[fid] = 1.0
+                            elif k.startswith("left_") and left_verts_world is not None:
+                                if left_contact_stage[cnt]:
+                                    # In-air stage: force all five fingers onto mesh.
+                                    p_proj, _ = _nearest_point_on_vertices(
+                                        target_pos, left_verts_world
+                                    )
+                                    target_pos = p_proj
+                                    frame_contact_left[fid] = 1.0
+                                else:
+                                    p_proj, dist = _nearest_point_on_vertices(
+                                        target_pos, left_verts_world
+                                    )
+                                    if dist < mesh_contact_threshold:
+                                        target_pos = p_proj
+                                        frame_contact_left[fid] = 1.0
+                    mj_data_ik.mocap_pos[v["mocap_idx"]] = target_pos
                     mj_data_ik.mocap_quat[v["mocap_idx"]] = qpos_ref[
                         cnt, v["qpos_idx"], 3:
                     ]
@@ -639,7 +839,10 @@ def main(
                 )
                 for k, v in contact_map.items():
                     if k in track_site_name and "object" in track_site_name:
-                        contact[i] = contact_ref[cnt, v]
+                        if v < 5:
+                            contact[i] = frame_contact_right[v]
+                        else:
+                            contact[i] = frame_contact_left[v - 5]
                         break
 
             mujoco.mj_forward(mj_model, mj_data)
@@ -752,6 +955,29 @@ def main(
         qpos_list = qpos_list[1:]
         contact_pos_list = np.array(contact_pos_list)[1:]
         contact_list = np.array(contact_list)[1:]
+        # Keep only object-track channels in saved contact/contact_pos.
+        # This avoids mixing hand-track channels (zeros) in right/left mode.
+        object_track_idx_right = [
+            i for i, n in enumerate(track_site_names) if n.startswith("track_object_right_")
+        ]
+        object_track_idx_left = [
+            i for i, n in enumerate(track_site_names) if n.startswith("track_object_left_")
+        ]
+        if embodiment_type == "right":
+            keep_idx = object_track_idx_right
+        elif embodiment_type == "left":
+            keep_idx = object_track_idx_left
+        elif embodiment_type == "bimanual":
+            keep_idx = object_track_idx_right + object_track_idx_left
+        else:
+            raise ValueError(f"Invalid embodiment_type: {embodiment_type}")
+        if len(keep_idx) == 0:
+            loguru.logger.warning(
+                "No track_object_* channels found; keeping original contact channels."
+            )
+        else:
+            contact_list = contact_list[:, keep_idx]
+            contact_pos_list = contact_pos_list[:, keep_idx, :]
         assert qpos_list.shape[0] == qvel_list.shape[0]
 
         # directly rollout ctrl to get qpos_rollout

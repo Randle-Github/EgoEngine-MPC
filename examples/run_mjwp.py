@@ -15,8 +15,6 @@ Date: 2025-08-11
 from __future__ import annotations
 
 import time
-from dataclasses import fields
-from pathlib import Path
 
 import hydra
 import imageio
@@ -24,7 +22,7 @@ import loguru
 import mujoco
 import numpy as np
 import torch
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
 from spider.config import Config, process_config
 from spider.interp import get_slice
@@ -39,8 +37,8 @@ from spider.simulators.mjwp import (
     get_qpos,
     get_qvel,
     get_reward,
-    get_terminal_reward,
     get_terminate,
+    get_terminal_reward,
     get_trace,
     load_env_params,
     load_state,
@@ -51,44 +49,8 @@ from spider.simulators.mjwp import (
     step_env,
     sync_env,
 )
-from spider.viewers import (
-    log_frame,
-    render_image,
-    setup_renderer,
-    setup_viewer,
-    update_viewer,
-)
-
-_CONFIG_SKIP_FIELDS = {
-    "noise_scale",
-    "env_params_list",
-    "viewer_body_entity_and_ids",
-}
-
-
-def _normalize_yaml_value(value):
-    if isinstance(value, torch.Tensor):
-        return value.detach().cpu().tolist()
-    if isinstance(value, np.ndarray):
-        return value.tolist()
-    if isinstance(value, np.generic):
-        return value.item()
-    if isinstance(value, tuple):
-        return list(value)
-    return value
-
-
-def _save_config_yaml(config: Config) -> None:
-    if not config.save_config:
-        return
-    config_dict = {}
-    for field in fields(config):
-        if field.name in _CONFIG_SKIP_FIELDS:
-            continue
-        config_dict[field.name] = _normalize_yaml_value(getattr(config, field.name))
-    output_path = Path(config.output_dir) / "config.yaml"
-    OmegaConf.save(config=OmegaConf.create(config_dict), f=str(output_path))
-    loguru.logger.info(f"Saved config to {output_path}")
+from spider.viewers import render_image, setup_renderer, setup_viewer, update_viewer
+from spider.viewers.rerun_viewer import log_frame
 
 
 def main(config: Config):
@@ -100,12 +62,6 @@ def main(config: Config):
     qpos_ref, qvel_ref, ctrl_ref, contact, contact_pos = load_data(
         config, config.data_path
     )
-    # hack: start from step 500
-    # qpos_ref = qpos_ref[500:]
-    # qvel_ref = qvel_ref[500:]
-    # ctrl_ref = ctrl_ref[500:]
-    # contact = contact[500:]
-    # contact_pos = contact_pos[500:]
     ref_data = (qpos_ref, qvel_ref, ctrl_ref, contact, contact_pos)
     config.max_sim_steps = (
         config.max_sim_steps
@@ -158,7 +114,6 @@ def main(config: Config):
             )
         env_params_list.append(env_params)
     config.env_params_list = env_params_list
-    _save_config_yaml(config)
 
     # setup viewer and renderer
     run_viewer = setup_viewer(config, mj_model, mj_data)
@@ -219,7 +174,7 @@ def main(config: Config):
                             config, renderer, mj_model, mj_data, mj_data_ref
                         )
                         images.append(image)
-                if "rerun" in config.viewer or "viser" in config.viewer:
+                if "rerun" in config.viewer:
                     # manually log the state
                     log_frame(
                         mj_data,

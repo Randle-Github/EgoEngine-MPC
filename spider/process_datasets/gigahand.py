@@ -797,8 +797,7 @@ def main(
                 if save_video:
                     imageio.mimsave(f"{output_dir}/visualization.mp4", images, fps=120)
                     loguru.logger.info(f"Saved video to {output_dir}/visualization.mp4")
-                if not show_viewer:
-                    break
+                break
             if show_viewer:
                 gui.sync()
                 rate_limiter.sleep()

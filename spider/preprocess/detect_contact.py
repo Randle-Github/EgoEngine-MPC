@@ -26,6 +26,35 @@ import spider
 from spider.io import get_processed_data_dir
 
 
+def _load_obj_vertices(obj_path: str) -> np.ndarray:
+    """Load OBJ vertices only, returned in the mesh local frame."""
+    verts = []
+    with open(obj_path, encoding="utf-8") as f:
+        for line in f:
+            if line.startswith("v "):
+                parts = line.strip().split()
+                if len(parts) >= 4:
+                    verts.append([float(parts[1]), float(parts[2]), float(parts[3])])
+    if len(verts) == 0:
+        return np.zeros((0, 3), dtype=np.float64)
+    return np.asarray(verts, dtype=np.float64)
+
+
+def _project_points_to_mesh_vertices(points: np.ndarray, verts: np.ndarray) -> np.ndarray:
+    """Project points to nearest mesh vertices (object local frame)."""
+    if verts is None or len(verts) == 0:
+        return points
+    out = points.copy()
+    for i in range(points.shape[0]):
+        p = points[i]
+        # keep zeros for invalid / no-contact channels
+        if np.linalg.norm(p) < 1e-9:
+            continue
+        d2 = np.sum((verts - p[None, :]) ** 2, axis=1)
+        out[i] = verts[np.argmin(d2)]
+    return out
+
+
 def main(
     dataset_dir: str = f"{spider.ROOT}/../example_datasets",
     dataset_name: str = "oakink",
@@ -49,12 +78,14 @@ def main(
     )
     os.makedirs(processed_dir, exist_ok=True)
     # load qpos
-    qpos_path = f"{processed_dir}/trajectory_keypoints.npz"
+    qpos_path = f"{processed_dir}/trajectory_kinematic.npz"
     if not os.path.exists(qpos_path):
         raise FileNotFoundError(
             f"trajectory_keypoints.npz not found at {qpos_path}. Run dataset preprocessing first."
         )
     data = np.load(qpos_path)
+
+
     qpos_wrist_right = data["qpos_wrist_right"]
     qpos_finger_right = data["qpos_finger_right"]
     qpos_obj_right = data["qpos_obj_right"]
@@ -114,6 +145,8 @@ def main(
 
     # load task_info for object mesh paths
     task_info_path = f"{processed_dir}/../task_info.json"
+    right_convex_dir = None
+    left_convex_dir = None
     if not os.path.exists(task_info_path):
         loguru.logger.warning(
             f"task_info.json not found at {task_info_path}; proceeding without object meshes."
@@ -168,6 +201,7 @@ def main(
             left_object_files = []
 
     right_object_collision_names = []
+    right_object_verts = np.zeros((0, 3), dtype=np.float64)
     if embodiment_type in ["right", "bimanual"]:
         for f in right_object_files:
             suffix = f.split(".")[0]
@@ -183,19 +217,27 @@ def main(
                 conaffinity=0,
             )
             right_object_collision_names.append(f"right_object_{suffix}")
-    else:
-        right_object_handle.add_geom(
-            name="right_object_mass",
-            type=mujoco.mjtGeom.mjGEOM_SPHERE,
-            pos=[1.0, 1.0, 1.0],
-            size=[0.01, 0.01, 0.01],
-            group=0,
-            condim=1,
-            contype=0,
-            conaffinity=0,
-        )
+            if right_convex_dir is not None:
+                obj_path = f"{right_convex_dir}/{f}"
+                v = _load_obj_vertices(obj_path)
+                if v.shape[0] > 0:
+                    right_object_verts = np.concatenate([right_object_verts, v], axis=0)
+    # Always add a tiny non-colliding mass geom so free-joint object body has
+    # valid mass/inertia even when mesh inertial is degenerate.
+    right_object_handle.add_geom(
+        name="right_object_mass",
+        type=mujoco.mjtGeom.mjGEOM_SPHERE,
+        pos=[1.0, 1.0, 1.0],
+        size=[0.01, 0.01, 0.01],
+        group=0,
+        condim=1,
+        contype=0,
+        conaffinity=0,
+        density=1000.0,
+    )
 
     left_object_collision_names = []
+    left_object_verts = np.zeros((0, 3), dtype=np.float64)
     if embodiment_type in ["left", "bimanual"]:
         for f in left_object_files:
             suffix = f.split(".")[0]
@@ -211,28 +253,24 @@ def main(
                 conaffinity=0,
             )
             left_object_collision_names.append(f"left_object_{suffix}")
-        if len(left_object_collision_names) == 0:
-            left_object_handle.add_geom(
-                name="left_object_mass",
-                type=mujoco.mjtGeom.mjGEOM_SPHERE,
-                pos=[1.0, 1.0, 1.0],
-                size=[0.01, 0.01, 0.01],
-                group=0,
-                condim=1,
-                contype=0,
-                conaffinity=0,
-            )
-    else:
-        left_object_handle.add_geom(
-            name="left_object_mass",
-            type=mujoco.mjtGeom.mjGEOM_SPHERE,
-            pos=[1.0, 1.0, 1.0],
-            size=[0.01, 0.01, 0.01],
-            group=0,
-            condim=1,
-            contype=0,
-            conaffinity=0,
-        )
+            if left_convex_dir is not None:
+                obj_path = f"{left_convex_dir}/{f}"
+                v = _load_obj_vertices(obj_path)
+                if v.shape[0] > 0:
+                    left_object_verts = np.concatenate([left_object_verts, v], axis=0)
+    # Always add a tiny non-colliding mass geom so free-joint object body has
+    # valid mass/inertia even when mesh inertial is degenerate.
+    left_object_handle.add_geom(
+        name="left_object_mass",
+        type=mujoco.mjtGeom.mjGEOM_SPHERE,
+        pos=[1.0, 1.0, 1.0],
+        size=[0.01, 0.01, 0.01],
+        group=0,
+        condim=1,
+        contype=0,
+        conaffinity=0,
+        density=1000.0,
+    )
 
     object_collision_names = right_object_collision_names + left_object_collision_names
 
@@ -408,17 +446,34 @@ def main(
                     contact_pos_right = avg_contact_pos[:5, :]
                     contact_pos_left = avg_contact_pos[5:, :]
                 elif embodiment_type == "right":
-                    contact_right = contact_seq_smooth
-                    contact_pos_right = avg_contact_pos
+                    # sensor order is fixed as [right(5), left(5)]
+                    contact_right = contact_seq_smooth[:, :5]
+                    contact_pos_right = avg_contact_pos[:5, :]
+                    # project to right object mesh (object local frame)
+                    contact_pos_right = _project_points_to_mesh_vertices(
+                        contact_pos_right, right_object_verts
+                    )
                     contact_left = np.zeros_like(contact_right)
                     contact_pos_left = np.zeros_like(contact_pos_right)
                 elif embodiment_type == "left":
-                    contact_left = contact_seq_smooth
-                    contact_pos_left = avg_contact_pos
+                    # sensor order is fixed as [right(5), left(5)]
+                    contact_left = contact_seq_smooth[:, 5:]
+                    contact_pos_left = avg_contact_pos[5:, :]
+                    # project to left object mesh (object local frame)
+                    contact_pos_left = _project_points_to_mesh_vertices(
+                        contact_pos_left, left_object_verts
+                    )
                     contact_right = np.zeros_like(contact_left)
                     contact_pos_right = np.zeros_like(contact_pos_left)
                 else:
                     raise ValueError(f"Invalid hand type: {embodiment_type}")
+                if embodiment_type == "bimanual":
+                    contact_pos_right = _project_points_to_mesh_vertices(
+                        contact_pos_right, right_object_verts
+                    )
+                    contact_pos_left = _project_points_to_mesh_vertices(
+                        contact_pos_left, left_object_verts
+                    )
                 # save contact_seq_smooth to npz
                 # save contact info to processed dir for future reference
                 contact_out_path = f"{processed_dir}/trajectory_keypoints.npz"
@@ -442,8 +497,8 @@ def main(
                         axs[0, i].plot(contact_seq_smooth[:, i])
                         axs[1, i].plot(contact_seq_smooth[:, i + 5])
                     plt.show()
-                if not show_viewer:
-                    break
+                # if not show_viewer:
+                break
             if show_viewer:
                 gui.sync()
                 rate_limiter.sleep()

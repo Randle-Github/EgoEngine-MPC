@@ -163,6 +163,8 @@ def main(
     task_info = {}
     with open(task_info_path) as f:
         task_info = json.load(f)
+    table_height_z = task_info.get("table_height_z", None)
+    table_pose = task_info.get("table_pose", None)
     right_convex_dir = task_info.get("right_object_convex_dir")
     right_convex_dir = f"{dataset_dir}/{right_convex_dir}"
     left_convex_dir = task_info.get("left_object_convex_dir")
@@ -171,6 +173,70 @@ def main(
     right_mesh_dir = f"{dataset_dir}/{right_mesh_dir}"
     left_mesh_dir = task_info.get("left_object_mesh_dir")
     left_mesh_dir = f"{dataset_dir}/{left_mesh_dir}"
+
+    # Optional tabletop from task_info (for datasets providing desk pose).
+    # We keep floor for global stability and add a finite-thickness table box.
+    if table_pose is not None or table_height_z is not None:
+        table_thickness = 0.04
+        table_size_xy = [0.6, 0.8]
+        table_pos = [0.0, 0.0, 0.0]
+        table_quat = [1.0, 0.0, 0.0, 0.0]  # wxyz
+        if table_pose is not None:
+            T = np.asarray(table_pose, dtype=np.float64).reshape(4, 4)
+            table_pos = [
+                float(T[0, 3]),
+                float(T[1, 3]),
+                float(T[2, 3]) - table_thickness / 2.0,
+            ]
+            mat9 = np.asarray(T[:3, :3], dtype=np.float64).reshape(-1)
+            quat = np.zeros(4, dtype=np.float64)
+            mujoco.mju_mat2Quat(quat, mat9)
+            table_quat = quat.tolist()
+        else:
+            table_pos = [0.0, 0.0, float(table_height_z) - table_thickness / 2.0]
+        mj_spec.worldbody.add_geom(
+            name="table",
+            type=mujoco.mjtGeom.mjGEOM_BOX,
+            size=[table_size_xy[0], table_size_xy[1], table_thickness / 2.0],
+            pos=table_pos,
+            quat=table_quat,
+            rgba=[0.5, 0.4, 0.3, 1.0],
+            condim=3,
+            contype=1,
+            conaffinity=1,
+            friction=[1.0, 0.2, 0.1],
+        )
+        # Add four legs so table height is explicit in visualization.
+        # Legs are axis-aligned in world frame for stability and clarity.
+        leg_w = 0.03
+        top_z = table_pos[2] + table_thickness / 2.0
+        leg_h = max(top_z, 0.2)  # leg top aligns with tabletop top
+        leg_z = leg_h / 2.0
+        lx = table_size_xy[0] - leg_w
+        ly = table_size_xy[1] - leg_w
+        for i, (sx, sy) in enumerate(
+            [
+                (+1.0, +1.0),
+                (+1.0, -1.0),
+                (-1.0, +1.0),
+                (-1.0, -1.0),
+            ]
+        ):
+            mj_spec.worldbody.add_geom(
+                name=f"table_leg_{i}",
+                type=mujoco.mjtGeom.mjGEOM_BOX,
+                size=[leg_w / 2.0, leg_w / 2.0, leg_h / 2.0],
+                pos=[
+                    table_pos[0] + sx * lx,
+                    table_pos[1] + sy * ly,
+                    leg_z,
+                ],
+                rgba=[0.45, 0.32, 0.2, 1.0],
+                condim=3,
+                contype=1,
+                conaffinity=1,
+                friction=[1.0, 0.2, 0.1],
+            )
 
     # Right object meshes
     if (
@@ -254,8 +320,8 @@ def main(
                 type=mujoco.mjtGeom.mjGEOM_MESH,
                 meshname=f"right_{suffix}",
                 pos=[0, 0, 0],
-                conaffinity=0,
-                contype=0,
+                conaffinity=1,
+                contype=1,
                 rgba=rgba,
                 density=density,
                 group=group,
@@ -358,8 +424,8 @@ def main(
                 type=mujoco.mjtGeom.mjGEOM_MESH,
                 meshname=f"left_{suffix}",
                 pos=[0, 0, 0],
-                conaffinity=0,
-                contype=0,
+                conaffinity=1,
+                contype=1,
                 rgba=rgba,
                 density=density,
                 group=group,
@@ -728,6 +794,15 @@ def main(
     loguru.logger.info(
         f"Saved model with equality constraints to {export_file_path_eq}"
     )
+
+    # Save contact site ids for contact reward in MJWP.
+    # We use track_object_* sites and keep a stable order by site id.
+    contact_site_ids = []
+    for sid in range(mj_model.nsite):
+        site_name = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_SITE, sid)
+        if site_name is not None and site_name.startswith("track_object_"):
+            contact_site_ids.append(int(sid))
+    task_info["contact_site_ids"] = contact_site_ids
 
     # save task info
     task_info["robot_type"] = robot_type

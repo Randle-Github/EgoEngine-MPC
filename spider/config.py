@@ -27,7 +27,7 @@ from spider.io import get_processed_data_dir
 @dataclass
 class Config:
     # === TASK CONFIGURATION ===
-    robot_type: str = "xhand"  # "inspire", "allegro", "g1"
+    robot_type: str = "allegro"  # "inspire", "allegro", "g1"
     embodiment_type: str = "bimanual"  # "left", "right", "bimanual", "CMU"
     task: str = "pick_spoon_bowl"
     seed: int = 0
@@ -40,14 +40,14 @@ class Config:
     data_path: str = ""
 
     # === SIMULATOR CONFIGURATION ===
-    simulator: str = "mjwp"  # "isaac" | "mujoco" | "mjwp" | "mjwp_cons" | "mjwp_eq" | "mjwp_cons_eq" | "kinematic"
+    simulator: str = "isaac"  # "isaac" | "mujoco" | "mjwp" | "mjwp_cons" | "mjwp_eq" | "mjwp_cons_eq" | "kinematic"
     device: str = "cuda:0"
     # Simulation timing
     sim_dt: float = 0.01  # simulation timestep
-    ctrl_dt: float = 0.4  # control timestep
-    ref_dt: float = 0.02  # reference data timestep
+    ctrl_dt: float = 0.2  # control timestep
+    ref_dt: float = 1 / 50.0  # reference data timestep
     render_dt: float = 0.02  # rendering timestep
-    horizon: float = 1.6  # planning horizon
+    horizon: float = 1.2  # planning horizon
     knot_dt: float = 0.4  # knot point spacing
     max_sim_steps: int = -1  # maximum simulation steps (-1 for unlimited)
     # Simulation constraints
@@ -68,15 +68,15 @@ class Config:
 
     # === OPTIMIZER CONFIGURATION ===
     # Sampling parameters
-    num_samples: int = 2048
-    temperature: float = 0.3
+    num_samples: int = 1024
+    temperature: float = 0.1
     max_num_iterations: int = 16
     improvement_threshold: float = 0.01
     improvement_check_steps: int = 1
     # Termination parameters
-    terminate_resample: bool = False
-    object_pos_threshold: float = 0.1
-    object_rot_threshold: float = 0.3
+    terminate_resample: bool = True
+    object_pos_threshold: float = 0.03
+    object_rot_threshold: float = 0.1
     base_pos_threshold: float = 0.5
     base_rot_threshold: float = 0.4
     # Compilation
@@ -88,22 +88,22 @@ class Config:
     exploit_ratio: float = 0.01
     exploit_noise_scale: float = 0.01
     # Noise scaling by component
-    joint_noise_scale: float = 0.15
-    pos_noise_scale: float = 0.03
-    rot_noise_scale: float = 0.03
+    joint_noise_scale: float = 0.3
+    pos_noise_scale: float = 0.003
+    rot_noise_scale: float = 0.003
     # Reward scaling
-    base_pos_rew_scale: float = 1.0
-    base_rot_rew_scale: float = 0.3
+    base_pos_rew_scale: float = 0.03
+    base_rot_rew_scale: float = 0.01
     joint_rew_scale: float = 0.003
     pos_rew_scale: float = 1.0
-    rot_rew_scale: float = 0.3
+    rot_rew_scale: float = 0.1
     vel_rew_scale: float = 0.0001
     terminal_rew_scale: float = 1.0
     contact_rew_scale: float = 0.0
 
     # === VISUALIZATION CONFIGURATION ===
     show_viewer: bool = True
-    viewer: str = "mujoco"  # "mujoco" | "rerun" | "viser" | "isaac"
+    viewer: str = "mujoco"  # "mujoco" | "rerun" | "isaac"
     rerun_spawn: bool = False
     save_video: bool = True
     save_info: bool = True
@@ -265,23 +265,12 @@ def process_config(config: Config):
         config.ref_dt = task_info["ref_dt"]
         loguru.logger.info(f"overriding ref_dt: {config.ref_dt} from task_info.json")
 
-    # override contact site ids
-    if config.contact_rew_scale > 0.0:
-        if "contact_site_ids" in task_info:
-            config.contact_site_ids = task_info["contact_site_ids"]
-            loguru.logger.info(
-                f"overriding contact_site_ids: {config.contact_site_ids} from task_info.json"
-            )
-        else:
-            raise ValueError(
-                "contact_site_ids not found in task_info.json while contact_rew_scale > 0.0"
-            )
-
-    # set seed
+    # set random seed
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
-    torch.cuda.manual_seed(config.seed)
-    torch.cuda.manual_seed_all(config.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(config.seed)
+        torch.cuda.manual_seed_all(config.seed)
     random.seed(config.seed)
 
     return config

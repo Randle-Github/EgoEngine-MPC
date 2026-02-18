@@ -13,6 +13,7 @@ and robust (no DR groups here; see legacy script for advanced features).
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 import mujoco
@@ -42,7 +43,7 @@ class MJWPEnv:
     model_wp: mjwarp.Model
     data_wp: mjwarp.Data
     data_wp_prev: mjwarp.Data
-    graph: wp.ScopedCapture.Graph
+    graph: wp.ScopedCapture.Graph | None
     # Device alias used for Warp allocations/launches (e.g., "cuda:1" or "cpu")
     device: str
     num_worlds: int
@@ -50,16 +51,20 @@ class MJWPEnv:
 
 def _compile_step(
     model_wp: mjwarp.Model, data_wp: mjwarp.Data
-) -> wp.ScopedCapture.Graph:
+) -> wp.ScopedCapture.Graph | None:
     """Warm up and capture a CUDA graph that runs a single mjwarp.step."""
+
+    # Safety switch: CUDA graph can crash on some driver / warp / scene combos.
+    if os.environ.get("SPIDER_DISABLE_CUDA_GRAPH", "0") == "1":
+        return None
 
     def _step_once():
         mjwarp.step(model_wp, data_wp)
 
     # Warmup/compile
-    # _step_once()
-    # _step_once()
-    # wp.synchronize()
+    _step_once()
+    _step_once()
+    wp.synchronize()
     # Capture
     with wp.ScopedCapture() as capture:
         _step_once()
@@ -270,10 +275,9 @@ def get_reward(
 
     TODO: move reward computation to task-specific module
     """
-    qpos_ref, qvel_ref, ctrl_ref, contact_ref, contact_pos_ref = ref
+    qpos_ref, qvel_ref, ctrl_ref, contact_ref, _contact_pos_ref = ref
     qpos_sim = wp.to_torch(env.data_wp.qpos)
     qvel_sim = wp.to_torch(env.data_wp.qvel)
-
     # weighted qpos tracking
     qpos_diff = _diff_qpos(
         config, qpos_sim, qpos_ref.unsqueeze(0).repeat(qpos_sim.shape[0], 1)
@@ -285,18 +289,7 @@ def get_reward(
 
     qpos_rew = -qpos_dist * 1.0
     qvel_rew = -config.vel_rew_scale * qvel_dist * 1.0
-
-    # contact reward
-    if config.contact_rew_scale > 0.0 and len(config.contact_site_ids) > 0:
-        site_xpos_torch = wp.to_torch(env.data_wp.site_xpos)
-        contact_pos = site_xpos_torch[:, config.contact_site_ids]
-        contact_dist = torch.norm(contact_pos - contact_pos_ref, p=2, dim=-1)
-        contact_dist_masked = contact_dist * contact_ref.unsqueeze(0)
-        contact_rew = -contact_dist_masked.sum(dim=1)
-    else:
-        contact_rew = 0.0
-
-    reward = qpos_rew + qvel_rew + contact_rew
+    reward = qpos_rew + qvel_rew
 
     info = {
         "qpos_dist": qpos_dist,
@@ -547,7 +540,10 @@ def step_env(config: Config, env: MJWPEnv, ctrl_mujoco: torch.Tensor):
         env = apply_perturbation(config, env)
         # step control
         wp.copy(env.data_wp.ctrl, wp.from_torch(ctrl_mujoco.to(torch.float32)))
-        wp.capture_launch(env.graph)
+        if env.graph is None:
+            mjwarp.step(env.model_wp, env.data_wp)
+        else:
+            wp.capture_launch(env.graph)
 
 
 def save_env_params(config: Config, env: MJWPEnv):
