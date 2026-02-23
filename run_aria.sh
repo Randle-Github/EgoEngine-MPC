@@ -25,7 +25,7 @@ UP_SAMPLE="1"   # trajectory temporal upsample factor (integer >= 1)
 START_STEP="0" # "64" # only for MPC input trajectory, start from timestep K
 
 # Optional flags
-RUN_CONTACT_DETECT=1   # 1 to enable
+RUN_CONTACT_DETECT=0   # 1 to enable
 SHOW_VIEWER=1
 
 # MPC tuning: default.yaml defaults
@@ -33,9 +33,9 @@ MPC_SIM_DT="0.01"
 MPC_CTRL_DT="0.4"
 MPC_HORIZON="1.6" # 1.6
 MPC_KNOT_DT="0.4"
-MPC_NUM_SAMPLES="2048" # 1024
-MPC_MAX_ITERS="64" # 32
-MPC_IMPROVE_THRESH="0.005" # 0.01
+MPC_NUM_SAMPLES="1024" # 1024
+MPC_MAX_ITERS="32" # 32
+MPC_IMPROVE_THRESH="0.01" # 0.01
 MPC_TEMPERATURE="0.1"
 
 # Reward tuning: default.yaml defaults
@@ -57,19 +57,19 @@ CONTACT_REW_SCALE="0.0" # 0.0
 #   --retarget-json "${RETARGET_JSON}" \
 #   --env-xml "${ENV_XML}" \
 #   --all-pose-json "${ALL_POSE_JSON}" \
-#   --w2cam-npy "${W2CAM_NPY}" \
+#  --w2cam-npy "${W2CAM_NPY}" \
 #   --object-name "${OBJECT_NAME}" \
 #   --ref-dt 0.02 \
 #   --base-offset-xyz ${BASE_OFFSET_XYZ} \
 #   --arena-diff-xyz ${ARENA_DIFF_XYZ} \
 #   --hand-z-rot-deg ${HAND_Z_ROT_DEG}
 
-# # ====== 2) Object convex decomposition ======
+# ====== 2) Object convex decomposition ======
 # uv run spider/preprocess/decompose_fast.py \
 #   --dataset-dir "${DATASET_DIR}" \
 #   --dataset-name "${DATASET_NAME}" \
 #   --robot-type "${ROBOT_TYPE}" \
-#   --embodiment-type "${EMBODIMENT_TYPE}" \
+#  --embodiment-type "${EMBODIMENT_TYPE}" \
 #   --task "${TASK}" \
 #   --data-id "${DATA_ID}"
 
@@ -108,24 +108,24 @@ PY
 fi
 
 # ====== 4) Generate scene.xml for xhand ======
-# uv run spider/preprocess/generate_xml.py \
-#   --dataset-dir "${DATASET_DIR}" \
-#   --dataset-name "${DATASET_NAME}" \
-#   --robot-type "${ROBOT_TYPE}" \
-#   --embodiment-type "${EMBODIMENT_TYPE}" \
-#   --task "${TASK}" \
-#   --data-id "${DATA_ID}" \
-#   --no-show-viewer
+uv run spider/preprocess/generate_xml.py \
+  --dataset-dir "${DATASET_DIR}" \
+  --dataset-name "${DATASET_NAME}" \
+  --robot-type "${ROBOT_TYPE}" \
+  --embodiment-type "${EMBODIMENT_TYPE}" \
+  --task "${TASK}" \
+  --data-id "${DATA_ID}" \
+  --no-show-viewer
 
 # ====== 5) Kinematic IK retargeting ======
-# uv run spider/preprocess/ik.py \
-#   --dataset-dir "${DATASET_DIR}" \
-#  --dataset-name "${DATASET_NAME}" \
-#   --robot-type "${ROBOT_TYPE}" \
-#   --embodiment-type "${EMBODIMENT_TYPE}" \
-#   --task "${TASK}" \
-#   --data-id "${DATA_ID}" \
-#   --no-show-viewer
+uv run spider/preprocess/ik.py \
+  --dataset-dir "${DATASET_DIR}" \
+ --dataset-name "${DATASET_NAME}" \
+  --robot-type "${ROBOT_TYPE}" \
+  --embodiment-type "${EMBODIMENT_TYPE}" \
+  --task "${TASK}" \
+  --data-id "${DATA_ID}" \
+  --no-show-viewer
 
 # ====== 5.5) Optional START_STEP + UP_SAMPLE for MPC input trajectory only ======
 if [[ "${UP_SAMPLE}" != "1" || "${START_STEP}" != "0" ]]; then
