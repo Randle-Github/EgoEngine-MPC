@@ -44,17 +44,105 @@ def _quat_wxyz_to_rotmat(quat_wxyz: np.ndarray) -> np.ndarray:
     )
 
 
-def _load_obj_vertices(obj_path: str) -> np.ndarray:
+def _offset_palm_target_pos(
+    wrist_pos: np.ndarray, wrist_quat_wxyz: np.ndarray, offset_m: float = 0.03
+) -> np.ndarray:
+    """Shift wrist target backward along palm direction by offset_m.
+
+    Assumes palm direction is the wrist frame local +Z axis.
+    """
+    R = _quat_wxyz_to_rotmat(wrist_quat_wxyz)
+    palm_dir_world = R[:, 2]
+    return wrist_pos - palm_dir_world * offset_m
+
+
+def _load_obj_mesh(obj_path: str) -> tuple[np.ndarray, np.ndarray]:
+    """Load OBJ mesh vertices and triangulated faces."""
     verts = []
+    faces = []
     with open(obj_path, encoding="utf-8") as f:
         for line in f:
             if line.startswith("v "):
                 parts = line.strip().split()
                 if len(parts) >= 4:
                     verts.append([float(parts[1]), float(parts[2]), float(parts[3])])
+            elif line.startswith("f "):
+                parts = line.strip().split()[1:]
+                if len(parts) < 3:
+                    continue
+                idxs = []
+                for p in parts:
+                    vtok = p.split("/")[0]
+                    if not vtok:
+                        continue
+                    vid = int(vtok)
+                    if vid > 0:
+                        idxs.append(vid - 1)  # OBJ is 1-based
+                    else:
+                        idxs.append(vid)  # negative index, resolve later
+                if len(idxs) < 3:
+                    continue
+                # Triangulate polygon faces using fan triangulation.
+                for i in range(1, len(idxs) - 1):
+                    faces.append([idxs[0], idxs[i], idxs[i + 1]])
     if len(verts) == 0:
-        return np.zeros((0, 3), dtype=np.float64)
-    return np.asarray(verts, dtype=np.float64)
+        return (
+            np.zeros((0, 3), dtype=np.float64),
+            np.zeros((0, 3), dtype=np.int64),
+        )
+    verts = np.asarray(verts, dtype=np.float64)
+    if len(faces) == 0:
+        return verts, np.zeros((0, 3), dtype=np.int64)
+    faces = np.asarray(faces, dtype=np.int64)
+    faces = np.where(faces < 0, faces + verts.shape[0], faces)
+    valid = np.all((faces >= 0) & (faces < verts.shape[0]), axis=1)
+    return verts, faces[valid]
+
+
+def _nearest_point_on_triangle(
+    p: np.ndarray, a: np.ndarray, b: np.ndarray, c: np.ndarray
+) -> np.ndarray:
+    """Closest point on triangle ABC to point p."""
+    ab = b - a
+    ac = c - a
+    ap = p - a
+    d1 = np.dot(ab, ap)
+    d2 = np.dot(ac, ap)
+    if d1 <= 0.0 and d2 <= 0.0:
+        return a
+
+    bp = p - b
+    d3 = np.dot(ab, bp)
+    d4 = np.dot(ac, bp)
+    if d3 >= 0.0 and d4 <= d3:
+        return b
+
+    vc = d1 * d4 - d3 * d2
+    if vc <= 0.0 and d1 >= 0.0 and d3 <= 0.0:
+        v = d1 / (d1 - d3)
+        return a + v * ab
+
+    cp = p - c
+    d5 = np.dot(ab, cp)
+    d6 = np.dot(ac, cp)
+    if d6 >= 0.0 and d5 <= d6:
+        return c
+
+    vb = d5 * d2 - d1 * d6
+    if vb <= 0.0 and d2 >= 0.0 and d6 <= 0.0:
+        w = d2 / (d2 - d6)
+        return a + w * ac
+
+    va = d3 * d6 - d5 * d4
+    if va <= 0.0 and (d4 - d3) >= 0.0 and (d5 - d6) >= 0.0:
+        bc = c - b
+        w = (d4 - d3) / ((d4 - d3) + (d5 - d6))
+        return b + w * bc
+
+    denom = 1.0 / (va + vb + vc)
+    v = vb * denom
+    w = vc * denom
+    return a + v * ab + w * ac
 
 
 def _nearest_point_on_vertices(
@@ -65,6 +153,28 @@ def _nearest_point_on_vertices(
     d2 = np.sum((verts_world - p_world[None, :]) ** 2, axis=1)
     idx = int(np.argmin(d2))
     return verts_world[idx], float(np.sqrt(d2[idx]))
+
+
+def _nearest_point_on_mesh(
+    p_world: np.ndarray, verts_world: np.ndarray, faces: np.ndarray
+) -> tuple[np.ndarray, float]:
+    """Closest point on triangle mesh; falls back to vertices if faces are missing."""
+    if verts_world is None or verts_world.shape[0] == 0:
+        return p_world, np.inf
+    if faces is None or faces.shape[0] == 0:
+        return _nearest_point_on_vertices(p_world, verts_world)
+
+    best_p = p_world
+    best_d2 = np.inf
+    for f in faces:
+        q = _nearest_point_on_triangle(
+            p_world, verts_world[f[0]], verts_world[f[1]], verts_world[f[2]]
+        )
+        d2 = float(np.sum((q - p_world) ** 2))
+        if d2 < best_d2:
+            best_d2 = d2
+            best_p = q
+    return best_p, float(np.sqrt(best_d2))
 
 
 def add_mocap_bodies(
@@ -216,7 +326,7 @@ def main(
     wrist_solimp_width: float = 10.0,
     wrist_torque_scale: float = 10.0,
     object_solimp_width: float = 0.001,
-    max_num_initial_guess: int = 8,
+    max_num_initial_guess: int = 64,
     average_frame_size: int = 3,
     aggregate_contact: bool = False,
     z_offset: float = 0.0,
@@ -349,33 +459,29 @@ def main(
         qpos_obj_left[:, 2] > (np.min(qpos_obj_left[:, 2]) + contact_height_eps)
     )
 
-    # Load object convex vertices (local frame) for mesh-distance based contact logic.
+    # Load object visual mesh (local frame) for mesh-distance based contact logic.
     right_object_verts_local = np.zeros((0, 3), dtype=np.float64)
+    right_object_faces = np.zeros((0, 3), dtype=np.int64)
     left_object_verts_local = np.zeros((0, 3), dtype=np.float64)
+    left_object_faces = np.zeros((0, 3), dtype=np.int64)
     if embodiment_type in ["right", "bimanual"]:
-        right_convex_dir_rel = task_info.get("right_object_convex_dir")
-        if right_convex_dir_rel:
-            right_convex_dir = os.path.join(dataset_dir, right_convex_dir_rel)
-            if os.path.isdir(right_convex_dir):
-                for fn in sorted(os.listdir(right_convex_dir)):
-                    if fn.endswith(".obj") and fn.split(".")[0].isdigit():
-                        v = _load_obj_vertices(os.path.join(right_convex_dir, fn))
-                        if v.shape[0] > 0:
-                            right_object_verts_local = np.concatenate(
-                                [right_object_verts_local, v], axis=0
-                            )
+        right_mesh_dir_rel = task_info.get("right_object_mesh_dir")
+        if right_mesh_dir_rel:
+            right_mesh_file = os.path.join(dataset_dir, right_mesh_dir_rel, "visual.obj")
+            if os.path.isfile(right_mesh_file):
+                right_object_verts_local, right_object_faces = _load_obj_mesh(
+                    right_mesh_file
+                )
+            else:
+                loguru.logger.warning(f"Right object mesh not found: {right_mesh_file}")
     if embodiment_type in ["left", "bimanual"]:
-        left_convex_dir_rel = task_info.get("left_object_convex_dir")
-        if left_convex_dir_rel:
-            left_convex_dir = os.path.join(dataset_dir, left_convex_dir_rel)
-            if os.path.isdir(left_convex_dir):
-                for fn in sorted(os.listdir(left_convex_dir)):
-                    if fn.endswith(".obj") and fn.split(".")[0].isdigit():
-                        v = _load_obj_vertices(os.path.join(left_convex_dir, fn))
-                        if v.shape[0] > 0:
-                            left_object_verts_local = np.concatenate(
-                                [left_object_verts_local, v], axis=0
-                            )
+        left_mesh_dir_rel = task_info.get("left_object_mesh_dir")
+        if left_mesh_dir_rel:
+            left_mesh_file = os.path.join(dataset_dir, left_mesh_dir_rel, "visual.obj")
+            if os.path.isfile(left_mesh_file):
+                left_object_verts_local, left_object_faces = _load_obj_mesh(left_mesh_file)
+            else:
+                loguru.logger.warning(f"Left object mesh not found: {left_mesh_file}")
 
     # load model
     mj_model = mujoco.MjModel.from_xml_path(model_path)
@@ -537,8 +643,9 @@ def main(
 
     mj_model_ik = mj_spec.compile()
     mj_model_ik.opt.timestep = sim_dt
-    mj_model_ik.opt.iterations = 20
-    mj_model_ik.opt.ls_iterations = 50
+    # Spend more time in IK solver by default (debug-friendly, slower).
+    mj_model_ik.opt.iterations = 100
+    mj_model_ik.opt.ls_iterations = 200
     if not enable_collision:
         mj_model_ik.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_CONTACT
     mj_model_ik.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_ACTUATION
@@ -553,13 +660,6 @@ def main(
         mocap_id = mj_model_ik.body_mocapid[body_id]
         index_map[body_name]["mocap_idx"] = mocap_id
         # print(body_name, body_id, mocap_id)
-    palm_site_id_map = {}
-    for side in ["right", "left"]:
-        palm_name = f"{side}_palm"
-        sid = mujoco.mj_name2id(mj_model_ik, mujoco.mjtObj.mjOBJ_SITE, palm_name)
-        if sid >= 0:
-            palm_site_id_map[palm_name] = sid
-
     # set object position
     if embodiment_type == "bimanual":
         mj_data_ik.qpos[-14:-7] = qpos_obj_right[0]
@@ -577,10 +677,13 @@ def main(
         site_name = sites_for_mimic[i]
         mano_id = mano2mimic_site_idx[i]
         mocap_id = i
-        # Warm-start: initialize palm mocap position from human wrist position
-        # at frame 0, then switch to orientation-only palm tracking in rollout loop.
-        mj_data_ik.mocap_pos[mocap_id] = qpos_ref[0, mano_id, :3]
-        mj_data_ik.mocap_quat[mocap_id] = qpos_ref[0, mano_id, 3:]
+        # Warm-start from human wrist pose (position + orientation).
+        ref_pos = qpos_ref[0, mano_id, :3]
+        ref_quat = qpos_ref[0, mano_id, 3:]
+        if "palm" in site_name:
+            ref_pos = _offset_palm_target_pos(ref_pos, ref_quat, offset_m=-0.02)
+        mj_data_ik.mocap_pos[mocap_id] = ref_pos
+        mj_data_ik.mocap_quat[mocap_id] = ref_quat
 
     # rollout mujoco
     # reference dt inferred from MANO keypoint data spacing if available; default to 0.02
@@ -625,16 +728,20 @@ def main(
             frame_contact_left = np.zeros(5, dtype=np.float64)
             right_verts_world = None
             left_verts_world = None
+            right_faces = None
+            left_faces = None
             if right_object_verts_local.shape[0] > 0:
                 obj_qidx = index_map["right_object"]["qpos_idx"]
                 obj_pos = qpos_ref[cnt, obj_qidx, :3]
                 obj_R = _quat_wxyz_to_rotmat(qpos_ref[cnt, obj_qidx, 3:])
                 right_verts_world = right_object_verts_local @ obj_R.T + obj_pos
+                right_faces = right_object_faces
             if left_object_verts_local.shape[0] > 0:
                 obj_qidx = index_map["left_object"]["qpos_idx"]
                 obj_pos = qpos_ref[cnt, obj_qidx, :3]
                 obj_R = _quat_wxyz_to_rotmat(qpos_ref[cnt, obj_qidx, 3:])
                 left_verts_world = left_object_verts_local @ obj_R.T + obj_pos
+                left_faces = left_object_faces
 
             if cnt == 0:
                 # reset distance cost
@@ -653,21 +760,22 @@ def main(
                         if v["mocap_idx"] != -1:
                             mocap_idx = v["mocap_idx"]
                             qpos_idx = v["qpos_idx"]
-                            # Warm-start stage: use human wrist position as palm
-                            # initialization target at frame 0.
-                            mj_data_ik.mocap_pos[mocap_idx] = qpos_ref[
-                                cnt, qpos_idx, :3
-                            ]
+                            # Warm-start stage: use human wrist pose as initialization target.
+                            ref_pos = qpos_ref[cnt, qpos_idx, :3]
+                            ref_quat = qpos_ref[cnt, qpos_idx, 3:]
+                            if "palm" in k:
+                                ref_pos = _offset_palm_target_pos(
+                                    ref_pos, ref_quat, offset_m=0.02
+                                )
+                            mj_data_ik.mocap_pos[mocap_idx] = ref_pos
                             if "tip" in k:
                                 mj_data_ik.mocap_pos[mocap_idx] += (
                                     np.random.randn(3) * 0.002
                                 )
-                            mj_data_ik.mocap_quat[mocap_idx] = qpos_ref[
-                                cnt, qpos_idx, 3:
-                            ]
+                            mj_data_ik.mocap_quat[mocap_idx] = ref_quat
                     nq_obj = 14 if embodiment_type == "bimanual" else 7
                     qpos_diff_sum = 0.0
-                    for i in range(30):
+                    for i in range(120):
                         mj_data_ik.ctrl[:] = mj_data_ik.qpos[:-nq_obj].copy()
                         mujoco.mj_step(mj_model_ik, mj_data_ik)
                     # compute mocap diff
@@ -685,7 +793,7 @@ def main(
                     mj_data.qvel[:] = mj_data_ik.qvel.copy() * 0.0
                     mj_data.ctrl[:] = mj_data_ik.qpos[:-nq_obj].copy()
                     mujoco.mj_forward(mj_model, mj_data)
-                    for i in range(30):
+                    for i in range(120):
                         mujoco.mj_step(mj_model, mj_data)
                         qpos_diff_sum += np.linalg.norm(mj_data.qpos - mj_data_ik.qpos)
                     if qpos_diff_sum < best_qpos_diff_sum:
@@ -705,9 +813,11 @@ def main(
             for k, v in index_map.items():
                 if v["mocap_idx"] != -1:
                     target_pos = qpos_ref[cnt, v["qpos_idx"], :3].copy()
-                    if "palm" in k and k in palm_site_id_map:
-                        # Orientation-only palm tracking: do not pull palm position.
-                        target_pos = mj_data_ik.site_xpos[palm_site_id_map[k]].copy()
+                    target_quat = qpos_ref[cnt, v["qpos_idx"], 3:].copy()
+                    if "palm" in k:
+                        target_pos = _offset_palm_target_pos(
+                            target_pos, target_quat, offset_m=0.02
+                        )
                     # Mesh-threshold contact logic:
                     # if fingertip is close enough to object mesh, project it
                     # onto mesh and mark as contact.
@@ -728,14 +838,14 @@ def main(
                             if k.startswith("right_") and right_verts_world is not None:
                                 if right_contact_stage[cnt]:
                                     # In-air stage: force all five fingers onto mesh.
-                                    p_proj, _ = _nearest_point_on_vertices(
-                                        target_pos, right_verts_world
+                                    p_proj, _ = _nearest_point_on_mesh(
+                                        target_pos, right_verts_world, right_faces
                                     )
                                     target_pos = p_proj
                                     frame_contact_right[fid] = 1.0
                                 else:
-                                    p_proj, dist = _nearest_point_on_vertices(
-                                        target_pos, right_verts_world
+                                    p_proj, dist = _nearest_point_on_mesh(
+                                        target_pos, right_verts_world, right_faces
                                     )
                                     if dist < mesh_contact_threshold:
                                         target_pos = p_proj
@@ -743,24 +853,23 @@ def main(
                             elif k.startswith("left_") and left_verts_world is not None:
                                 if left_contact_stage[cnt]:
                                     # In-air stage: force all five fingers onto mesh.
-                                    p_proj, _ = _nearest_point_on_vertices(
-                                        target_pos, left_verts_world
+                                    p_proj, _ = _nearest_point_on_mesh(
+                                        target_pos, left_verts_world, left_faces
                                     )
                                     target_pos = p_proj
                                     frame_contact_left[fid] = 1.0
                                 else:
-                                    p_proj, dist = _nearest_point_on_vertices(
-                                        target_pos, left_verts_world
+                                    p_proj, dist = _nearest_point_on_mesh(
+                                        target_pos, left_verts_world, left_faces
                                     )
                                     if dist < mesh_contact_threshold:
                                         target_pos = p_proj
                                         frame_contact_left[fid] = 1.0
                     mj_data_ik.mocap_pos[v["mocap_idx"]] = target_pos
-                    mj_data_ik.mocap_quat[v["mocap_idx"]] = qpos_ref[
-                        cnt, v["qpos_idx"], 3:
-                    ]
+                    mj_data_ik.mocap_quat[v["mocap_idx"]] = target_quat
 
-            for _ in range(max(1, int(ref_dt / sim_dt))):
+            # Extra inner IK settling steps for tighter tracking (slow but robust).
+            for _ in range(max(1, int(ref_dt / sim_dt)) * 5):
                 mujoco.mj_step(mj_model_ik, mj_data_ik)
 
             # set site position and set it to ref mocap position (use original mj_model and mj_data)

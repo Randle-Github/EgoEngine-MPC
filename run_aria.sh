@@ -108,14 +108,14 @@ PY
 fi
 
 # ====== 4) Generate scene.xml for xhand ======
-uv run spider/preprocess/generate_xml.py \
-  --dataset-dir "${DATASET_DIR}" \
-  --dataset-name "${DATASET_NAME}" \
-  --robot-type "${ROBOT_TYPE}" \
-  --embodiment-type "${EMBODIMENT_TYPE}" \
-  --task "${TASK}" \
-  --data-id "${DATA_ID}" \
-  --no-show-viewer
+# uv run spider/preprocess/generate_xml.py \
+#   --dataset-dir "${DATASET_DIR}" \
+#   --dataset-name "${DATASET_NAME}" \
+#   --robot-type "${ROBOT_TYPE}" \
+#   --embodiment-type "${EMBODIMENT_TYPE}" \
+#   --task "${TASK}" \
+#   --data-id "${DATA_ID}" \
+#   --no-show-viewer
 
 # ====== 5) Kinematic IK retargeting ======
 uv run spider/preprocess/ik.py \
