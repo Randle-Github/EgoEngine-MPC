@@ -28,9 +28,9 @@ START_STEP="0" # "64" # only for MPC input trajectory, start from timestep K
 RUN_CONTACT_DETECT=0   # 1 to enable
 SHOW_VIEWER=1
 
-# MPC tuning: default.yaml defaults
+# MPC tuning: CTRL_DT must match reference trajectory rate (20 Hz => 0.05s)
 MPC_SIM_DT="0.01"
-MPC_CTRL_DT="0.4"
+MPC_CTRL_DT="0.05"
 MPC_HORIZON="1.6" # 1.6
 MPC_KNOT_DT="0.4"
 MPC_NUM_SAMPLES="1024" # 1024
@@ -59,7 +59,7 @@ CONTACT_REW_SCALE="0.0" # 0.0
 #   --all-pose-json "${ALL_POSE_JSON}" \
 #  --w2cam-npy "${W2CAM_NPY}" \
 #   --object-name "${OBJECT_NAME}" \
-#   --ref-dt 0.02 \
+#   --ref-dt 0.05 \
 #   --base-offset-xyz ${BASE_OFFSET_XYZ} \
 #   --arena-diff-xyz ${ARENA_DIFF_XYZ} \
 #   --hand-z-rot-deg ${HAND_Z_ROT_DEG}

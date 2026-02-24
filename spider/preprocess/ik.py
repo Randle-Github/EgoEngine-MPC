@@ -326,7 +326,7 @@ def main(
     wrist_solimp_width: float = 10.0,
     wrist_torque_scale: float = 10.0,
     object_solimp_width: float = 0.001,
-    max_num_initial_guess: int = 64,
+    max_num_initial_guess: int = 8,
     average_frame_size: int = 3,
     aggregate_contact: bool = False,
     z_offset: float = 0.0,
@@ -643,9 +643,8 @@ def main(
 
     mj_model_ik = mj_spec.compile()
     mj_model_ik.opt.timestep = sim_dt
-    # Spend more time in IK solver by default (debug-friendly, slower).
-    mj_model_ik.opt.iterations = 100
-    mj_model_ik.opt.ls_iterations = 200
+    mj_model_ik.opt.iterations = 20
+    mj_model_ik.opt.ls_iterations = 50
     if not enable_collision:
         mj_model_ik.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_CONTACT
     mj_model_ik.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_ACTUATION
@@ -775,7 +774,7 @@ def main(
                             mj_data_ik.mocap_quat[mocap_idx] = ref_quat
                     nq_obj = 14 if embodiment_type == "bimanual" else 7
                     qpos_diff_sum = 0.0
-                    for i in range(120):
+                    for i in range(30):
                         mj_data_ik.ctrl[:] = mj_data_ik.qpos[:-nq_obj].copy()
                         mujoco.mj_step(mj_model_ik, mj_data_ik)
                     # compute mocap diff
@@ -793,7 +792,7 @@ def main(
                     mj_data.qvel[:] = mj_data_ik.qvel.copy() * 0.0
                     mj_data.ctrl[:] = mj_data_ik.qpos[:-nq_obj].copy()
                     mujoco.mj_forward(mj_model, mj_data)
-                    for i in range(120):
+                    for i in range(30):
                         mujoco.mj_step(mj_model, mj_data)
                         qpos_diff_sum += np.linalg.norm(mj_data.qpos - mj_data_ik.qpos)
                     if qpos_diff_sum < best_qpos_diff_sum:
@@ -868,8 +867,7 @@ def main(
                     mj_data_ik.mocap_pos[v["mocap_idx"]] = target_pos
                     mj_data_ik.mocap_quat[v["mocap_idx"]] = target_quat
 
-            # Extra inner IK settling steps for tighter tracking (slow but robust).
-            for _ in range(max(1, int(ref_dt / sim_dt)) * 5):
+            for _ in range(max(1, int(ref_dt / sim_dt))):
                 mujoco.mj_step(mj_model_ik, mj_data_ik)
 
             # set site position and set it to ref mocap position (use original mj_model and mj_data)

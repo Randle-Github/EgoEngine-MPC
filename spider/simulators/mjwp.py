@@ -214,6 +214,29 @@ def _weight_diff_qpos(config: Config) -> torch.Tensor:
     return w
 
 
+def _termination_reward_offset(config: Config) -> float:
+    """Shift for MPC-style reward: reward = C - tracking_error.
+
+    C is chosen from termination thresholds so that, for object-tracking tasks
+    with non-object weights disabled (the current RL setup), states inside the
+    no-terminate region have non-negative reward (ignoring optional vel penalty).
+    """
+    pos_term = float(config.pos_rew_scale) * float(config.object_pos_threshold)
+    rot_term = float(config.rot_rew_scale) * float(config.object_rot_threshold)
+    if config.embodiment_type == "bimanual":
+        # Two objects, each with pos + rot terms in _diff_qpos / _weight_diff_qpos.
+        c = np.sqrt(2.0 * (pos_term**2 + rot_term**2))
+    elif config.embodiment_type in ["right", "left", "humanoid_object"]:
+        c = np.sqrt(pos_term**2 + rot_term**2)
+    elif config.embodiment_type in ["humanoid"]:
+        base_pos_term = float(config.base_pos_rew_scale) * float(config.base_pos_threshold)
+        base_rot_term = float(config.base_rot_rew_scale) * float(config.base_rot_threshold)
+        c = np.sqrt(base_pos_term**2 + base_rot_term**2)
+    else:
+        c = 0.0
+    return float(c)
+
+
 def _diff_qpos(
     config: Config, qpos_sim: torch.Tensor, qpos_ref: torch.Tensor
 ) -> torch.Tensor:
@@ -278,24 +301,31 @@ def get_reward(
     qpos_ref, qvel_ref, ctrl_ref, contact_ref, _contact_pos_ref = ref
     qpos_sim = wp.to_torch(env.data_wp.qpos)
     qvel_sim = wp.to_torch(env.data_wp.qvel)
-    # weighted qpos tracking
-    qpos_diff = _diff_qpos(
-        config, qpos_sim, qpos_ref.unsqueeze(0).repeat(qpos_sim.shape[0], 1)
-    )
+    if qpos_ref.dim() == 1:
+        qpos_ref_b = qpos_ref.unsqueeze(0).repeat(qpos_sim.shape[0], 1)
+    else:
+        qpos_ref_b = qpos_ref
+    if qvel_ref.dim() == 1:
+        qvel_ref_b = qvel_ref.unsqueeze(0).repeat(qvel_sim.shape[0], 1)
+    else:
+        qvel_ref_b = qvel_ref
+    # MPC-style weighted tracking error (same geometry as original reward).
+    qpos_diff = _diff_qpos(config, qpos_sim, qpos_ref_b)
     qpos_weight = _weight_diff_qpos(config)
     delta_qpos = qpos_diff * qpos_weight
     qpos_dist = torch.norm(delta_qpos, p=2, dim=1)
-    qvel_dist = torch.norm(qvel_sim - qvel_ref, p=2, dim=1)
+    qvel_dist = torch.norm(qvel_sim - qvel_ref_b, p=2, dim=1)
 
-    qpos_rew = -qpos_dist * 1.0
-    qvel_rew = -config.vel_rew_scale * qvel_dist * 1.0
-    reward = qpos_rew + qvel_rew
+    total_dist = qpos_dist + float(config.vel_rew_scale) * qvel_dist
+    c_offset = _termination_reward_offset(config)
+    reward = c_offset - total_dist
 
     info = {
         "qpos_dist": qpos_dist,
         "qvel_dist": qvel_dist,
-        "qpos_rew": qpos_rew,
-        "qvel_rew": qvel_rew,
+        "total_dist": total_dist,
+        "reward_offset_c": torch.full_like(qpos_dist, fill_value=float(c_offset)),
+        "reward": reward,
     }
     return reward, info
 
@@ -337,24 +367,28 @@ def get_terminate(
     # compute object position and orientation error, compare to thereshold
     qpos_sim = wp.to_torch(env.data_wp.qpos)
     qpos_ref, qvel_ref, ctrl_ref, contact_ref, _contact_pos_ref = ref_slice
+    if qpos_ref.dim() == 1:
+        qpos_ref_b = qpos_ref.unsqueeze(0).repeat(qpos_sim.shape[0], 1)
+    else:
+        qpos_ref_b = qpos_ref
     if config.embodiment_type == "bimanual":
         left_obj_pos = qpos_sim[:, -14:-11]
-        left_obj_pos_ref = qpos_ref[-14:-11].unsqueeze(0)
+        left_obj_pos_ref = qpos_ref_b[:, -14:-11]
         left_obj_pos_error = torch.norm(left_obj_pos - left_obj_pos_ref, p=2, dim=1)
         left_obj_quat = qpos_sim[:, -11:-7]
-        left_obj_quat_ref = qpos_ref[-11:-7].unsqueeze(0)
+        left_obj_quat_ref = qpos_ref_b[:, -11:-7]
         left_obj_quat_error = torch.norm(
-            quat_sub(left_obj_quat, left_obj_quat_ref.repeat(qpos_sim.shape[0], 1)),
+            quat_sub(left_obj_quat, left_obj_quat_ref),
             p=2,
             dim=1,
         )
         right_obj_pos = qpos_sim[:, -7:-4]
-        right_obj_pos_ref = qpos_ref[-7:-4].unsqueeze(0)
+        right_obj_pos_ref = qpos_ref_b[:, -7:-4]
         right_obj_pos_error = torch.norm(right_obj_pos - right_obj_pos_ref, p=2, dim=1)
         right_obj_quat = qpos_sim[:, -4:]
-        right_obj_quat_ref = qpos_ref[-4:].unsqueeze(0)
+        right_obj_quat_ref = qpos_ref_b[:, -4:]
         right_obj_quat_error = torch.norm(
-            quat_sub(right_obj_quat, right_obj_quat_ref.repeat(qpos_sim.shape[0], 1)),
+            quat_sub(right_obj_quat, right_obj_quat_ref),
             p=2,
             dim=1,
         )
@@ -374,24 +408,24 @@ def get_terminate(
         )
     elif config.embodiment_type in ["right", "left"]:
         obj_pos = qpos_sim[:, -7:-4]
-        obj_pos_ref = qpos_ref[-7:-4].unsqueeze(0)
+        obj_pos_ref = qpos_ref_b[:, -7:-4]
         obj_pos_error = torch.norm(obj_pos - obj_pos_ref, p=2, dim=1)
         obj_quat = qpos_sim[:, -4:]
-        obj_quat_ref = qpos_ref[-4:].unsqueeze(0)
+        obj_quat_ref = qpos_ref_b[:, -4:]
         obj_quat_error = torch.norm(
-            quat_sub(obj_quat, obj_quat_ref.repeat(qpos_sim.shape[0], 1)), p=2, dim=1
+            quat_sub(obj_quat, obj_quat_ref), p=2, dim=1
         )
         terminate = (obj_pos_error > config.object_pos_threshold) | (
             obj_quat_error > config.object_rot_threshold
         )
     elif config.embodiment_type in ["humanoid", "humanoid_object"]:
         base_pos = qpos_sim[:, :3]
-        base_pos_ref = qpos_ref[:3].unsqueeze(0)
+        base_pos_ref = qpos_ref_b[:, :3]
         base_pos_error = torch.norm(base_pos - base_pos_ref, p=2, dim=1)
         base_quat = qpos_sim[:, 3:7]
-        base_quat_ref = qpos_ref[3:7].unsqueeze(0)
+        base_quat_ref = qpos_ref_b[:, 3:7]
         base_quat_error = torch.norm(
-            quat_sub(base_quat, base_quat_ref.repeat(qpos_sim.shape[0], 1)), p=2, dim=1
+            quat_sub(base_quat, base_quat_ref), p=2, dim=1
         )
         terminate = (base_pos_error > config.base_pos_threshold) | (
             base_quat_error > config.base_rot_threshold

@@ -1,0 +1,139 @@
+_wandb:
+    value:
+        cli_version: 0.25.0
+        e:
+            cedxmg6gs0pmbk0ju37uf75woxhovznm:
+                args:
+                    - --dataset-dir
+                    - /home/ycl/projects/workspace/spider/example_datasets
+                    - --dataset-name
+                    - gigahand
+                    - --robot-type
+                    - xhand
+                    - --embodiment-type
+                    - right
+                    - --task
+                    - mustard_901_1
+                    - --data-id
+                    - "0"
+                    - --device
+                    - cuda:0
+                    - --num-envs
+                    - "8192"
+                    - --future-ctrl-steps
+                    - "0"
+                    - --max-episode-ctrl-steps
+                    - "64"
+                    - --num-steps-per-env
+                    - "16"
+                    - --learning-iterations
+                    - "3000"
+                    - --ckpt-interval
+                    - "500"
+                    - --viz-interval
+                    - "2"
+                    - --rollout-video-ctrl-steps
+                    - "32"
+                    - --wandb-project
+                    - egoengine-spider-rl
+                    - --wandb-entity
+                    - ""
+                    - --wandb-run-name
+                    - ""
+                    - --wandb-media-only
+                    - --sim-dt
+                    - "0.01"
+                    - --ctrl-dt
+                    - "0.05"
+                    - --horizon
+                    - "1.6"
+                    - --knot-dt
+                    - "0.4"
+                    - --pos-rew-scale
+                    - "1.0"
+                    - --rot-rew-scale
+                    - "0.3"
+                    - --joint-rew-scale
+                    - "0"
+                    - --base-pos-rew-scale
+                    - "0"
+                    - --base-rot-rew-scale
+                    - "0"
+                    - --vel-rew-scale
+                    - "0.000"
+                    - --contact-rew-scale
+                    - "0.0"
+                    - --object-pos-threshold
+                    - "0.05"
+                    - --object-rot-threshold
+                    - "1.0"
+                    - --num-dr
+                    - "1"
+                    - --pair-margin-range-min
+                    - "-0.005"
+                    - --pair-margin-range-max
+                    - "0.005"
+                    - --xy-offset-range-min
+                    - "-0.005"
+                    - --xy-offset-range-max
+                    - "0.005"
+                    - --first-ctrl-noise-scale
+                    - "0.5"
+                    - --last-ctrl-noise-scale
+                    - "1.0"
+                    - --final-noise-scale
+                    - "0.1"
+                    - --joint-noise-scale
+                    - "0.15"
+                    - --pos-noise-scale
+                    - "0.03"
+                    - --rot-noise-scale
+                    - "0.03"
+                codePath: examples/run_mjwp_rl_rsl.py
+                codePathLocal: examples/run_mjwp_rl_rsl.py
+                cpu_count: 24
+                cpu_count_logical: 32
+                cudaVersion: "12.7"
+                disk:
+                    /:
+                        total: "4029212606464"
+                        used: "2296008679424"
+                email: liuyangcen112358@gmail.com
+                executable: /home/ycl/miniconda3/envs/spider/bin/python
+                git:
+                    commit: 43cd29b5f6c3a672864215faec144aabb7b00827
+                    remote: https://github.com/Randle-Github/EgoEngine-MPC.git
+                gpu: NVIDIA GeForce RTX 4090
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Ada
+                      cudaCores: 16384
+                      memoryTotal: "25757220864"
+                      name: NVIDIA GeForce RTX 4090
+                      uuid: GPU-cd41e69a-6b5d-cae1-2cc6-1db1361cc03e
+                host: rl2-ws10
+                memory:
+                    total: "67121795072"
+                os: Linux-5.15.0-164-generic-x86_64-with-glibc2.35
+                program: /home/ycl/projects/workspace/spider/examples/run_mjwp_rl_rsl.py
+                python: CPython 3.12.12
+                root: /home/ycl/projects/workspace/spider
+                startedAt: "2026-02-24T20:07:37.080914Z"
+                writerId: cedxmg6gs0pmbk0ju37uf75woxhovznm
+        m: []
+        python_version: 3.12.12
+        t:
+            "1":
+                - 1
+                - 105
+            "2":
+                - 1
+                - 105
+            "3":
+                - 13
+                - 16
+                - 61
+            "4": 3.12.12
+            "5": 0.25.0
+            "12": 0.25.0
+            "13": linux-x86_64
