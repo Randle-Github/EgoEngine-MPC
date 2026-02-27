@@ -62,6 +62,8 @@ class RLTrainArgs:
     pair_margin_range_max: float = 0.005
     xy_offset_range_min: float = -0.005
     xy_offset_range_max: float = 0.005
+    object_mass_scale_range_min: float = 1.0
+    object_mass_scale_range_max: float = 1.0
 
     # Residual action scale base (use MPC noise scales)
     first_ctrl_noise_scale: float = 0.5
@@ -122,6 +124,10 @@ def _make_spider_config(args: RLTrainArgs) -> Config:
         num_dr=args.num_dr,
         pair_margin_range=(args.pair_margin_range_min, args.pair_margin_range_max),
         xy_offset_range=(args.xy_offset_range_min, args.xy_offset_range_max),
+        object_mass_scale_range=(
+            args.object_mass_scale_range_min,
+            args.object_mass_scale_range_max,
+        ),
         # noise scales for residual action scaling
         first_ctrl_noise_scale=args.first_ctrl_noise_scale,
         last_ctrl_noise_scale=args.last_ctrl_noise_scale,

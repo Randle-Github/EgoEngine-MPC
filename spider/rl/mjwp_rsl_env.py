@@ -140,36 +140,64 @@ class MJWPRslResidualEnv:
         self._episode_ctrl_steps_buf = torch.zeros(
             self.num_envs, device=self.device, dtype=torch.long
         )
-        self._dr_env_params = self._build_dr_env_params()
-
+        self._dr_xy_offset = torch.zeros(self.num_envs, device=self.device, dtype=torch.float32)
+        self._dr_object_mass_scale = torch.ones(
+            self.num_envs, device=self.device, dtype=torch.float32
+        )
+        self._dr_pair_margin = 0.0
         self.obs_buf = self._reset_all()
         self.num_obs = int(self.obs_buf.shape[1])
 
-    def _build_dr_env_params(self) -> list[dict]:
-        # Mirror the DR parameter grid construction used in run_mjwp.py.
-        if int(self.cfg.num_dr) == 0:
-            xy_offset_list = [0.0]
-            pair_margin_list = [0.0]
-        else:
-            xy_offset_list = np.linspace(
-                float(self.cfg.xy_offset_range[0]),
-                float(self.cfg.xy_offset_range[1]),
-                int(self.cfg.num_dr),
-            )
-            pair_margin_list = np.linspace(
-                float(self.cfg.pair_margin_range[0]),
-                float(self.cfg.pair_margin_range[1]),
-                int(self.cfg.num_dr),
-            )
-        return [
-            {"xy_offset": float(xy_offset), "pair_margin": float(pair_margin)}
-            for xy_offset, pair_margin in zip(xy_offset_list, pair_margin_list)
-        ]
+    def _sample_uniform(self, lo: float, hi: float) -> float:
+        lo_f, hi_f = float(lo), float(hi)
+        if hi_f < lo_f:
+            lo_f, hi_f = hi_f, lo_f
+        return float(np.random.uniform(lo_f, hi_f))
 
-    def _sample_and_apply_dr(self) -> None:
-        if not self._dr_env_params:
+    def _sample_and_apply_dr(
+        self,
+        done_mask: torch.Tensor | None = None,
+        *,
+        resample_pair_margin: bool,
+    ) -> None:
+        if done_mask is None:
+            done_mask = torch.ones(self.num_envs, device=self.device, dtype=torch.bool)
+        else:
+            done_mask = done_mask.to(device=self.device, dtype=torch.bool)
+        if not bool(done_mask.any()):
             return
-        env_param = self._dr_env_params[np.random.randint(0, len(self._dr_env_params))]
+
+        prev_xy_offset = self._dr_xy_offset.clone()
+
+        if int(self.cfg.num_dr) == 0:
+            self._dr_xy_offset.zero_()
+            self._dr_object_mass_scale.fill_(1.0)
+            if resample_pair_margin:
+                self._dr_pair_margin = 0.0
+        else:
+            n_done = int(done_mask.sum().item())
+            self._dr_xy_offset[done_mask] = torch.empty(
+                n_done, device=self.device, dtype=torch.float32
+            ).uniform_(
+                float(self.cfg.xy_offset_range[0]), float(self.cfg.xy_offset_range[1])
+            )
+            self._dr_object_mass_scale[done_mask] = torch.empty(
+                n_done, device=self.device, dtype=torch.float32
+            ).uniform_(
+                float(self.cfg.object_mass_scale_range[0]),
+                float(self.cfg.object_mass_scale_range[1]),
+            )
+            if resample_pair_margin:
+                self._dr_pair_margin = self._sample_uniform(
+                    self.cfg.pair_margin_range[0], self.cfg.pair_margin_range[1]
+                )
+
+        xy_offset_delta = self._dr_xy_offset - prev_xy_offset
+        env_param = {
+            "pair_margin": float(self._dr_pair_margin),
+            "xy_offset": xy_offset_delta,
+            "object_mass_scale": self._dr_object_mass_scale,
+        }
         load_env_params(self.cfg, self.env, env_param)
 
     def _clamp_ref_idx(self, idx: int) -> int:
@@ -263,7 +291,7 @@ class MJWPRslResidualEnv:
             torch.ones(self.num_envs, device=self.device, dtype=torch.bool),
             self._sim_step_buf,
         )
-        self._sample_and_apply_dr()
+        self._sample_and_apply_dr(resample_pair_margin=True)
         self._sync_scalar_clocks_from_env0()
         self.rew_buf.zero_()
         self.reset_buf.zero_()
@@ -301,6 +329,7 @@ class MJWPRslResidualEnv:
         self.rew_buf[done_mask] = 0.0
         self.reset_buf[done_mask] = False
         self._set_done_envs_from_ref(done_mask, self._sim_step_buf)
+        self._sample_and_apply_dr(done_mask, resample_pair_margin=False)
         self._sync_scalar_clocks_from_env0()
 
     def _get_obs(self) -> torch.Tensor:

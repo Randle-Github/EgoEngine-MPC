@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+import loguru
 import mujoco
 import mujoco_warp as mjwarp
 import numpy as np
@@ -597,7 +598,33 @@ def load_env_params(config: Config, env: MJWPEnv, env_param: dict):
     Parameters to be updated:
     - pair_margin
     - xy_offset of the object
+    - object_mass_scale for object body mass / inertia
     """
+    def _to_world_tensor(value, *, default: float) -> torch.Tensor:
+        if value is None:
+            return torch.full(
+                (config.num_samples,), float(default), device=config.device, dtype=torch.float32
+            )
+        if isinstance(value, torch.Tensor):
+            t = value.to(device=config.device, dtype=torch.float32).reshape(-1)
+        else:
+            arr = np.asarray(value, dtype=np.float32)
+            if arr.ndim == 0:
+                return torch.full(
+                    (config.num_samples,),
+                    float(arr.item()),
+                    device=config.device,
+                    dtype=torch.float32,
+                )
+            t = torch.from_numpy(arr).to(device=config.device, dtype=torch.float32).reshape(-1)
+        if t.numel() == 1:
+            return torch.full((config.num_samples,), float(t.item()), device=config.device, dtype=torch.float32)
+        if t.numel() != int(config.num_samples):
+            raise ValueError(
+                f"Expected scalar or length-{config.num_samples} env param, got {t.numel()}"
+            )
+        return t
+
     # update model parameters (pair_margin)
     if "pair_margin" in env_param:
         pair_margin_single_np = np.full(
@@ -622,20 +649,98 @@ def load_env_params(config: Config, env: MJWPEnv, env_param: dict):
     # update object position (NOTE: currently, xy_offset is only one scalar, which means we only update in the diagonal direction)
     if "xy_offset" in env_param:
         qpos_override_th = wp.to_torch(env.data_wp.qpos)
+        xy_offset_world = _to_world_tensor(env_param["xy_offset"], default=0.0)
         # TODO: make object pos detection automatic
         if config.embodiment_type == "bimanual":
             qpos_override_th[:, -14:-12] = (
-                qpos_override_th[:, -14:-12] + env_param["xy_offset"]
+                qpos_override_th[:, -14:-12] + xy_offset_world[:, None]
             )
             qpos_override_th[:, -12:-10] = (
-                qpos_override_th[:, -12:-10] + env_param["xy_offset"]
+                qpos_override_th[:, -12:-10] + xy_offset_world[:, None]
             )
         elif config.embodiment_type in ["right", "left"]:
             qpos_override_th[:, -7:-5] = (
-                qpos_override_th[:, -7:-5] + env_param["xy_offset"]
+                qpos_override_th[:, -7:-5] + xy_offset_world[:, None]
             )
 
         wp.copy(env.data_wp.qpos, wp.from_torch(qpos_override_th))
+
+    if "object_mass_scale" in env_param:
+        mass_scale_world = _to_world_tensor(env_param["object_mass_scale"], default=1.0)
+        if not hasattr(env, "_base_body_mass_wp"):
+            env._base_body_mass_wp = wp.to_torch(env.model_wp.body_mass).clone()
+        if not hasattr(env, "_base_body_inertia_wp"):
+            env._base_body_inertia_wp = wp.to_torch(env.model_wp.body_inertia).clone()
+
+        body_ids = []
+        right_obj_id = mujoco.mj_name2id(
+            env.model_cpu, mujoco.mjtObj.mjOBJ_BODY, "right_object"
+        )
+        left_obj_id = mujoco.mj_name2id(
+            env.model_cpu, mujoco.mjtObj.mjOBJ_BODY, "left_object"
+        )
+        if right_obj_id != -1:
+            body_ids.append(int(right_obj_id))
+        if left_obj_id != -1:
+            body_ids.append(int(left_obj_id))
+
+        if body_ids:
+            mass_all = wp.to_torch(env.model_wp.body_mass).clone()
+            inertia_all = wp.to_torch(env.model_wp.body_inertia).clone()
+            base_mass = env._base_body_mass_wp
+            base_inertia = env._base_body_inertia_wp
+            supports_world_mass = (
+                mass_all.ndim >= 2 and int(mass_all.shape[0]) == int(config.num_samples)
+            )
+            supports_world_inertia = (
+                inertia_all.ndim >= 3
+                and int(inertia_all.shape[0]) == int(config.num_samples)
+            )
+            if (not supports_world_mass) or (not supports_world_inertia):
+                if not hasattr(env, "_warned_per_env_mass_scale_unsupported"):
+                    loguru.logger.warning(
+                        "[DR] per-env object_mass_scale is not supported by current model tensor "
+                        "layout; falling back to global mass scale."
+                    )
+                    env._warned_per_env_mass_scale_unsupported = True
+                mass_scale_world = mass_scale_world[:1]
+
+            if mass_all.ndim == 1:
+                mass_scale = float(mass_scale_world[0].item())
+                for bid in body_ids:
+                    mass_all[bid] = base_mass[bid] * mass_scale
+            else:
+                if supports_world_mass:
+                    for bid in body_ids:
+                        mass_all[:, bid] = base_mass[:, bid] * mass_scale_world
+                else:
+                    mass_scale = float(mass_scale_world[0].item())
+                    for bid in body_ids:
+                        mass_all[:, bid] = base_mass[:, bid] * mass_scale
+
+            if inertia_all.ndim == 2:
+                mass_scale = float(mass_scale_world[0].item())
+                for bid in body_ids:
+                    inertia_all[bid, :] = base_inertia[bid, :] * mass_scale
+            elif inertia_all.ndim == 3:
+                if supports_world_inertia:
+                    for bid in body_ids:
+                        inertia_all[:, bid, :] = (
+                            base_inertia[:, bid, :] * mass_scale_world[:, None]
+                        )
+                else:
+                    mass_scale = float(mass_scale_world[0].item())
+                    for bid in body_ids:
+                        inertia_all[:, bid, :] = base_inertia[:, bid, :] * mass_scale
+
+            wp.copy(
+                env.model_wp.body_mass,
+                wp.from_torch(mass_all.to(torch.float32), dtype=wp.float32),
+            )
+            wp.copy(
+                env.model_wp.body_inertia,
+                wp.from_torch(inertia_all.to(torch.float32), dtype=wp.vec3),
+            )
 
     return env
 

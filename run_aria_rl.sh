@@ -21,13 +21,13 @@ START_STEP="0"
 
 # RL (single-task, single-demo residual policy; rsl_rl)
 RL_DEVICE="cuda:0"
-RL_NUM_ENVS="8192"
+RL_NUM_ENVS="16384"
 RL_FUTURE_CTRL_STEPS="0"   # minimal current-step observation (future refs disabled)
 RL_EPISODE_CTRL_STEPS="64"
 RL_NUM_STEPS_PER_ENV="16"
 RL_LEARNING_ITERS="3000"
 RL_CKPT_INTERVAL="500"
-RL_VIZ_INTERVAL="2"
+RL_VIZ_INTERVAL="20"
 RL_ROLLOUT_VIDEO_CTRL_STEPS="0"   # 0 => no cap; rollout video runs until terminate/ref_end
 
 # W&B (media-only upload: reward curve png + rollout mp4 only)
@@ -58,14 +58,16 @@ PAIR_MARGIN_RANGE_MIN="-0.005"
 PAIR_MARGIN_RANGE_MAX="0.005"
 XY_OFFSET_RANGE_MIN="-0.005"
 XY_OFFSET_RANGE_MAX="0.005"
+OBJECT_MASS_SCALE_RANGE_MIN="0.9"
+OBJECT_MASS_SCALE_RANGE_MAX="1.1"
 
 # Residual action scale baseline from MPC noise scales
 FIRST_CTRL_NOISE="0.5"
 LAST_CTRL_NOISE="1.0"
 FINAL_NOISE="0.1"
-JOINT_NOISE_SCALE="0.15"
-POS_NOISE_SCALE="0.03"
-ROT_NOISE_SCALE="0.03"
+JOINT_NOISE_SCALE="0.2" # "0.15"
+POS_NOISE_SCALE="0.0325" # "0.03"
+ROT_NOISE_SCALE="0.05" # "0.03"
 
 if [[ "${RUN_IK}" == "1" ]]; then
   uv run spider/preprocess/ik.py \
@@ -176,6 +178,8 @@ fi
   --pair-margin-range-max "${PAIR_MARGIN_RANGE_MAX}" \
   --xy-offset-range-min "${XY_OFFSET_RANGE_MIN}" \
   --xy-offset-range-max "${XY_OFFSET_RANGE_MAX}" \
+  --object-mass-scale-range-min "${OBJECT_MASS_SCALE_RANGE_MIN}" \
+  --object-mass-scale-range-max "${OBJECT_MASS_SCALE_RANGE_MAX}" \
   --first-ctrl-noise-scale "${FIRST_CTRL_NOISE}" \
   --last-ctrl-noise-scale "${LAST_CTRL_NOISE}" \
   --final-noise-scale "${FINAL_NOISE}" \

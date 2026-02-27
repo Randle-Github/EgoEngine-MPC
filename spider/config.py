@@ -63,6 +63,7 @@ class Config:
     )
     pair_margin_range: tuple[float, float] = (-0.005, 0.005)
     xy_offset_range: tuple[float, float] = (-0.005, 0.005)
+    object_mass_scale_range: tuple[float, float] = (1.0, 1.0)
     perturb_force: float = 0.0
     perturb_torque: float = 0.0
 
