@@ -14,7 +14,6 @@ import tyro
 
 from spider.config import Config, process_config
 from spider.io import load_data
-from spider.rl.mjwp_rsl_env import MJWPRLEnvCfg, MJWPRslResidualEnv
 from spider.simulators.mjwp import (
     get_qpos,
     get_reward,
@@ -25,7 +24,7 @@ from spider.simulators.mjwp import (
     step_env,
 )
 from spider.viewers import render_image
-
+from spider.rl.mjwp_rsl_env import MJWPRLEnvCfg, MJWPRslResidualEnv
 
 @dataclass
 class RLTrainArgs:
@@ -53,6 +52,7 @@ class RLTrainArgs:
     contact_rew_scale: float = 0.0
 
     # Termination thresholds (MPC logic)
+    #TODO: this might be too strong?
     object_pos_threshold: float = 0.05
     object_rot_threshold: float = 1.0
 
@@ -90,8 +90,7 @@ class RLTrainArgs:
     wandb_entity: str = ""
     wandb_run_name: str = ""
     log_dir: str = "outputs/rl_rsl"
-    experiment_name: str = "aria_residual_single_demo"
-
+    experiment_name: str = task
 
 def _make_spider_config(args: RLTrainArgs) -> Config:
     cfg = Config(
@@ -175,15 +174,16 @@ def _make_rsl_train_cfg(args: RLTrainArgs) -> dict:
             "hidden_dims": [256, 128],
             "activation": "elu",
             "obs_normalization": True,
-            "stochastic": True,
-            "init_noise_std": 1.0,
+            #for the new version of rsl_rl libs
+            "distribution_cfg": {"class_name": "GaussianDistribution", "init_std": 1.0, "std_type": "scalar"},
         },
         "critic": {
             "class_name": "rsl_rl.models.mlp_model:MLPModel",
             "hidden_dims": [256, 128],
             "activation": "elu",
             "obs_normalization": True,
-            "stochastic": False,
+            #TODO: check the version of rsl_rl
+            # "stochastic": False,
         },
         "obs_groups": {
             "actor": ["policy"],
@@ -570,7 +570,6 @@ def main(args: RLTrainArgs):
             wandb_run.finish()
         except Exception:
             pass
-
 
 if __name__ == "__main__":
     main(tyro.cli(RLTrainArgs))

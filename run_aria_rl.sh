@@ -69,6 +69,7 @@ JOINT_NOISE_SCALE="0.2" # "0.15"
 POS_NOISE_SCALE="0.0325" # "0.03"
 ROT_NOISE_SCALE="0.05" # "0.03"
 
+# first run the IK
 if [[ "${RUN_IK}" == "1" ]]; then
   uv run spider/preprocess/ik.py \
     --dataset-dir "${DATASET_DIR}" \
@@ -140,6 +141,7 @@ if [[ "${WANDB_MEDIA_ONLY}" == "1" ]]; then
   WANDB_MEDIA_FLAG+=(--wandb-media-only)
 fi
 
+# now running the rl.
 "${RL_PYTHON_BIN}" examples/run_mjwp_rl_rsl.py \
   --dataset-dir "${DATASET_DIR}" \
   --dataset-name "${DATASET_NAME}" \

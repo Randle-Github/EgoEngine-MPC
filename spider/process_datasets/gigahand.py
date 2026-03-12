@@ -79,6 +79,7 @@ def load_model(
             device = torch.device("cuda")
         else:
             device = torch.device("cpu")
+
     from easymocap.smplmodel.body_model import SMPLlayer
 
     if model_type == "smpl":
@@ -116,7 +117,7 @@ def load_model(
     elif model_type == "manol" or model_type == "manor":
         lr = {"manol": "LEFT", "manor": "RIGHT"}
         body_model = SMPLlayer(
-            join(model_path, f"smplh/MANO_{lr[model_type]}.pkl"),
+            join(model_path, f"MANO_{lr[model_type]}.pkl"),
             model_type="mano",
             gender=gender,
             device=device,
@@ -454,7 +455,7 @@ def main(
     print("Loading MANO models...")
     # TODO: integrate to our pipeline
     body_model_right, body_model_left = load_body_model(
-        model_path=f"{spider.ROOT}/../../GigaHands/body_models"
+        model_path=f"{dataset_dir}/../Mano_hand_models"
     )
 
     # Initialize output arrays
@@ -798,10 +799,10 @@ def main(
                     imageio.mimsave(f"{output_dir}/visualization.mp4", images, fps=120)
                     loguru.logger.info(f"Saved video to {output_dir}/visualization.mp4")
                 break
+
             if show_viewer:
                 gui.sync()
                 rate_limiter.sleep()
-
 
 if __name__ == "__main__":
     tyro.cli(main)

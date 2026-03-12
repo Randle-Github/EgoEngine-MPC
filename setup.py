@@ -25,7 +25,7 @@ setup(
     description="Add your description here",
     long_description=Path("README.md").read_text(encoding="utf-8"),
     long_description_content_type="text/markdown",
-    python_requires=">=3.12",
+    python_requires=">=3.10",
     packages=find_packages(include=["spider", "spider.*"]),
     include_package_data=True,
     install_requires=parse_requirements("requirements.txt"),

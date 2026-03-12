@@ -62,8 +62,8 @@ def main(
     task: str = "pick_spoon_bowl",
     data_id: int = 0,
     show_viewer: bool = True,
-    save_video: bool = False,
-    plot_contact: bool = False,
+    save_video: bool = True,
+    plot_contact: bool = True,
     ref_dt: float = 0.02,
 ):
     dataset_dir = os.path.abspath(dataset_dir)
@@ -81,10 +81,9 @@ def main(
     qpos_path = f"{processed_dir}/trajectory_kinematic.npz"
     if not os.path.exists(qpos_path):
         raise FileNotFoundError(
-            f"trajectory_keypoints.npz not found at {qpos_path}. Run dataset preprocessing first."
+            f"trajectory_kinematic.npz not found at {qpos_path}. Run dataset preprocessing first."
         )
     data = np.load(qpos_path)
-
 
     qpos_wrist_right = data["qpos_wrist_right"]
     qpos_finger_right = data["qpos_finger_right"]
@@ -222,6 +221,7 @@ def main(
                 v = _load_obj_vertices(obj_path)
                 if v.shape[0] > 0:
                     right_object_verts = np.concatenate([right_object_verts, v], axis=0)
+
     # Always add a tiny non-colliding mass geom so free-joint object body has
     # valid mass/inertia even when mesh inertial is degenerate.
     right_object_handle.add_geom(
@@ -504,7 +504,7 @@ def main(
                 rate_limiter.sleep()
 
     if save_video:
-        file_dir = f"../../outputs/mano/{embodiment_type}/{task}"
+        file_dir = processed_dir
         os.makedirs(file_dir, exist_ok=True)
         imageio.mimsave(f"{file_dir}/contact.mp4", images, fps=30)
         loguru.logger.info(f"Saved video to {file_dir}/contact.mp4")

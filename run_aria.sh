@@ -200,6 +200,7 @@ fi
 export PYTHONFAULTHANDLER=1
 export SPIDER_DISABLE_CUDA_GRAPH=1
 
+# MPC
 uv run examples/run_mjwp.py \
   +override=${DATASET_NAME} \
   task=${TASK} \

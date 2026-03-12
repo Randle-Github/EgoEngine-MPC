@@ -17,7 +17,6 @@ from loop_rate_limiters import RateLimiter
 from spider import ROOT
 from spider.io import get_processed_data_dir
 
-
 def main(
     dataset_dir: str = f"{ROOT}/../example_datasets",
     dataset_name: str = "oakink",
@@ -60,6 +59,7 @@ def main(
     assets_root_dir = f"{dataset_dir}/processed/{dataset_name}/assets"
     # get relative dir of assets_root_dir and scene.xml
     assets_root_dir_rel = os.path.relpath(assets_root_dir, f"{processed_dir}/..")
+
     # Set meshdir relative to where scene.xml will be saved
     original_meshdir = mj_spec.meshdir
     mj_spec.meshdir = assets_root_dir_rel
@@ -95,6 +95,7 @@ def main(
     )
     contact_npz_path = f"{keypoint_data_dir}/trajectory_keypoints.npz"
     loaded_data = np.load(contact_npz_path)
+
     try:
         contact_left = loaded_data["contact_left"]
         contact_pos_left = loaded_data["contact_pos_left"]

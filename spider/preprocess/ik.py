@@ -313,7 +313,7 @@ def main(
     embodiment_type: str = "bimanual",
     task: str = "pick_spoon_bowl",
     show_viewer: bool = True,
-    save_video: bool = False,
+    save_video: bool = True,
     enable_collision: bool = False,
     start_idx: int = 0,
     end_idx: int = -1,
@@ -343,6 +343,7 @@ def main(
         task=task,
         data_id=data_id,
     )
+
     processed_dir_mano = get_processed_data_dir(
         dataset_dir=dataset_dir,
         dataset_name=dataset_name,
@@ -358,6 +359,7 @@ def main(
         raise FileNotFoundError(f"task_info.json not found: {task_info_path}")
     with open(task_info_path, encoding="utf-8") as f:
         task_info = json.load(f)
+
     # load model from processed scene
     model_path = f"{processed_dir_robot}/../scene.xml"
     # NOTE: sites in robot should follow the order of the xml file
@@ -371,6 +373,7 @@ def main(
     qpos_wrist_left = loaded_data["qpos_wrist_left"][start_idx:end_idx]
     qpos_obj_right = loaded_data["qpos_obj_right"][start_idx:end_idx]
     qpos_obj_left = loaded_data["qpos_obj_left"][start_idx:end_idx]
+
     try:
         contact_left = loaded_data["contact_left"][start_idx:end_idx]
         contact_right = loaded_data["contact_right"][start_idx:end_idx]
@@ -389,6 +392,7 @@ def main(
             "Please run detect_contact first and ensure "
             "contact_pos_left/contact_pos_right are saved."
         ) from e
+
     H_contact = qpos_finger_right.shape[0]
     # contact_pos can be either static (5,3) or per-frame (H,5,3)
     if contact_pos_right_raw.ndim == 2:

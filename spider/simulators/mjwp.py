@@ -54,7 +54,6 @@ def _compile_step(
     model_wp: mjwarp.Model, data_wp: mjwarp.Data
 ) -> wp.ScopedCapture.Graph | None:
     """Warm up and capture a CUDA graph that runs a single mjwarp.step."""
-
     # Safety switch: CUDA graph can crash on some driver / warp / scene combos.
     if os.environ.get("SPIDER_DISABLE_CUDA_GRAPH", "0") == "1":
         return None
@@ -66,9 +65,11 @@ def _compile_step(
     _step_once()
     _step_once()
     wp.synchronize()
+
     # Capture
     with wp.ScopedCapture() as capture:
         _step_once()
+
     wp.synchronize()
     return capture.graph
 
@@ -122,6 +123,7 @@ def setup_env(config: Config, ref_data: tuple[torch.Tensor, ...]) -> MJWPEnv:
     # CPU model/data
     model_cpu = setup_mj_model(config)
     data_cpu = mujoco.MjData(model_cpu)
+
     # Seed initial state
     arrs = (qpos_init, qvel_ref[0], ctrl_ref[0])
     data_cpu.qpos[:] = arrs[0].detach().cpu().numpy()
@@ -132,10 +134,12 @@ def setup_env(config: Config, ref_data: tuple[torch.Tensor, ...]) -> MJWPEnv:
     # Move to Warp (batched worlds)
     # Set Warp default device to match config to ensure kernels/modules load on it
     wp.set_device(str(config.device))
+
     # Build default model/data/graph on the configured device
     dev = str(config.device)
     with wp.ScopedDevice(dev):
         default_model_wp = mjwarp.put_model(model_cpu)
+
         # pair_margin_override_np = (
         #     np.zeros((int(config.num_samples), model_cpu.npair)).astype(np.float32)
         #     + 0.01
@@ -152,6 +156,7 @@ def setup_env(config: Config, ref_data: tuple[torch.Tensor, ...]) -> MJWPEnv:
             nconmax=int(config.nconmax_per_env),
             njmax=int(config.njmax_per_env),
         )
+
         data_wp_prev = mjwarp.put_data(
             model_cpu,
             data_cpu,
@@ -159,6 +164,7 @@ def setup_env(config: Config, ref_data: tuple[torch.Tensor, ...]) -> MJWPEnv:
             nconmax=int(config.nconmax_per_env),
             njmax=int(config.njmax_per_env),
         )
+
         default_graph = _compile_step(default_model_wp, default_data_wp)
 
     # Initialize env; default active is main
